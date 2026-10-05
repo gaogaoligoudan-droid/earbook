@@ -32,6 +32,7 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       # pin SHA（防 tag 漂移）；pachli 防坑参数：api 31 + default 镜像 + force-avd-creation false + -no-metrics
+      # -memory 3072：SherpaE2eTest 加载 kokoro int8 模型（~1GB 进程内存），2GB 会 OOM
       - name: Run instrumented smoke tests
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
@@ -39,8 +40,12 @@ jobs:
           target: default
           arch: x86_64
           force-avd-creation: false
-          emulator-options: -no-metrics -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 2048
-          script: ./gradlew connectedDebugAndroidTest --stacktrace
+          emulator-options: -no-metrics -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -memory 3072
+          script: |
+            # SherpaE2eTest 会在测试内下载 147MB 模型（GitHub release，CI 网络快）并跑合成基准
+            ./gradlew connectedDebugAndroidTest --stacktrace
+            # 提取 RTF 基准数据到 summary
+            adb logcat -d -s SherpaE2E:I | tee sherpa-benchmark.log || true
 
       - name: Upload test reports
         if: always()
@@ -50,4 +55,5 @@ jobs:
           path: |
             app/build/reports/androidTests/
             app/build/outputs/androidTest-results/
+            sherpa-benchmark.log
           if-no-files-found: ignore
