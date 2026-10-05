@@ -136,7 +136,12 @@ class ReadAloudService : Service() {
         store = PlaybackStore(this)
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
-        engine = SystemReadAloudEngine(this)
+        // 引擎选择（M2）：本地 sherpa 模型就绪 → 离线引擎；否则回落系统 TTS
+        engine = if (com.earbook.app.tts.ModelManager.isReady(this)) {
+            com.earbook.app.engine.SherpaReadAloudEngine(this)
+        } else {
+            SystemReadAloudEngine(this)
+        }
         engine.setOnDoneListener { utteranceId, success ->
             scope.launch { onSentenceDone(utteranceId, success) }
         }

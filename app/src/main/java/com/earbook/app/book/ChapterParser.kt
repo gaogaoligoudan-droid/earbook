@@ -26,6 +26,8 @@ object ChapterParser {
     }
 
     fun splitChapters(text: String): List<Chapter> {
+        // M2 TN 接线：分章前清洗（水印/URL/重复页眉）——TXT/PDF 全链路必经此一处
+        val text = com.earbook.app.text.TextNormalizer.clean(text)
         val lines = text.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() }

@@ -58,28 +58,4 @@ object TextNormalizer {
             .replace(Regex("""\n{2,}"""), "\n")
             .trim()
     }
-
-    /** 分句：中文句号/问号/叹号 + 换行；超长句按逗号二次切分（合成粒度控制） */
-    fun splitSentences(text: String, maxLen: Int = 80): List<String> {
-        val rough = text.split(Regex("""(?<=[。！？!?；;\n])"""))
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-        val out = mutableListOf<String>()
-        for (s in rough) {
-            if (s.length <= maxLen) {
-                out.add(s)
-            } else {
-                // 超长句按逗号/顿号二切
-                var buf = StringBuilder()
-                for (part in s.split(Regex("""(?<=[，、,])"""))) {
-                    if (buf.length + part.length > maxLen && buf.isNotEmpty()) {
-                        out.add(buf.toString()); buf = StringBuilder()
-                    }
-                    buf.append(part)
-                }
-                if (buf.isNotBlank()) out.add(buf.toString().trim())
-            }
-        }
-        return out
-    }
 }

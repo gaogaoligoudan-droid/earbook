@@ -53,18 +53,4 @@ class TextNormalizerTest {
         assertFalse(cleaned.contains("example.com"))
         assertTrue(cleaned.contains("这帖子的第三节"))
     }
-
-    @Test
-    fun `分句基本切分`() {
-        val s = TextNormalizer.splitSentences("第一句。第二句！第三句？")
-        assertEquals(3, s.size)
-    }
-
-    @Test
-    fun `超长句按逗号二切`() {
-        val long = "长" + "，".repeat(30) + "尾巴"
-        val s = TextNormalizer.splitSentences(long, maxLen = 10)
-        assertTrue(s.size > 2)
-        assertTrue(s.all { it.length <= 20 })
-    }
 }
