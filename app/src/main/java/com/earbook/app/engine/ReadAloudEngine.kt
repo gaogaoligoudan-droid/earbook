@@ -15,6 +15,13 @@ interface ReadAloudEngine {
     /** 朗读一段文本。utteranceId 用于回调时定位句子索引 */
     fun speak(text: String, utteranceId: String)
 
+    /**
+     * 预取提示（M2 句级流水）：Service 播当前句时把下一句喂给引擎，
+     * 支持预合成的引擎（Sherpa）提前生成——speak 到来时命中即零等待。
+     * 默认空实现（系统 TTS 自带队列，无需预取）。
+     */
+    fun prefetch(text: String, utteranceId: String) {}
+
     /** 停止当前朗读（可被新的 speak() 打断） */
     fun stop()
 

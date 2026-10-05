@@ -81,6 +81,9 @@ class SherpaTtsEngine(
         return audio.samples.size
     }
 
+    override fun synthesizeFull(sentence: String, speed: Float): FloatArray =
+        ensureLoaded().generate(text = sentence, sid = speakerId, speed = speed).samples
+
     override fun release() = synchronized(readyLock) {
         tts?.free()
         tts = null

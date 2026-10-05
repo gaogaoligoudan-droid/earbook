@@ -64,13 +64,16 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
                 val sr = engine.sampleRate()
                 val t = obtainTrack(sr)
                 t.play()
-                val written = engine.synthesize(text) { chunk ->
-                    if (stopped.get()) throw InterruptedException()
-                    // FloatArray → bytes（LITTLE_ENDIAN, float32）
-                    val bb = java.nio.ByteBuffer.allocate(chunk.size * 4)
-                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                    for (s in chunk) bb.putFloat(s)
-                    t.write(bb.array(), 0, bb.array().size, AudioTrack.WRITE_BLOCKING)
+                // 预取命中 → 直接播整句（合成等待归零）
+                val prefetched = synchronized(prefetchCache) { prefetchCache.remove(utteranceId) }
+                val written = if (prefetched != null) {
+                    writeFloats(t, prefetched)
+                    prefetched.size
+                } else {
+                    engine.synthesize(text) { chunk ->
+                        if (stopped.get()) throw InterruptedException()
+                        writeFloats(t, chunk)
+                    }
                 }
                 // 等播放追上写入（buffer drain）
                 while (!stopped.get() &&
@@ -89,6 +92,43 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
             }
         }, "sherpa-speak").apply { priority = Process.THREAD_PRIORITY_URGENT_AUDIO }.also {
             it.start()
+        }
+    }
+
+    /** 预取：后台预合成下一句存内存（命中即播，句间零等待） */
+    override fun prefetch(text: String, utteranceId: String) {
+        val engine = core ?: return
+        if (synchronized(prefetchCache) { prefetchCache.containsKey(utteranceId) }) return
+        Thread({
+            try {
+                val audio = engine.synthesizeFull(text)
+                if (audio.isNotEmpty()) {
+                    synchronized(prefetchCache) {
+                        prefetchCache[utteranceId] = audio
+                        trimPrefetchLocked()
+                    }
+                }
+            } catch (_: Throwable) {
+                // 预取失败静默——speak 走正常合成路径
+            }
+        }, "sherpa-prefetch").apply { priority = Process.THREAD_PRIORITY_BACKGROUND }.start()
+    }
+
+    /** FloatArray → AudioTrack（LITTLE_ENDIAN float32） */
+    private fun writeFloats(t: AudioTrack, chunk: FloatArray): Int {
+        if (chunk.isEmpty()) return 0
+        val bb = java.nio.ByteBuffer.allocate(chunk.size * 4)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (s in chunk) bb.putFloat(s)
+        return t.write(bb.array(), 0, bb.array().size, AudioTrack.WRITE_BLOCKING)
+    }
+
+    /** 预取缓存（句级内存）：容量保护——最多 2 句 */
+    private val prefetchCache = HashMap<String, FloatArray>()
+
+    private fun trimPrefetchLocked() {
+        while (prefetchCache.size > 2) {
+            prefetchCache.remove(prefetchCache.keys.first())
         }
     }
 

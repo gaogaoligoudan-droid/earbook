@@ -263,8 +263,20 @@ class ReadAloudService : Service() {
         requestFocus() || return
         isSpeaking = true
         engine.speak(sentence, utteranceId(chapterIndex, sentenceIndex))
+        // M2 句级流水：预取下一句（含跨章首句），引擎支持时句间零等待
+        nextSentenceAfter(chapterIndex, sentenceIndex)?.let { (nc, ns, text) ->
+            engine.prefetch(text, utteranceId(nc, ns))
+        }
         updateState()
         updateNotification()
+    }
+
+    /** 当前句之后的一句（跨章边界）：返回 (章idx, 句idx, 文本) 或 null */
+    private fun nextSentenceAfter(cIdx: Int, sIdx: Int): Triple<Int, Int, String>? {
+        val cur = chapters.getOrNull(cIdx) ?: return null
+        cur.sentences.getOrNull(sIdx + 1)?.let { return Triple(cIdx, sIdx + 1, it) }
+        val next = chapters.getOrNull(cIdx + 1) ?: return null
+        return next.sentences.firstOrNull()?.let { Triple(cIdx + 1, 0, it) }
     }
 
     private fun pause(autoResumeAfterFocus: Boolean = false) {

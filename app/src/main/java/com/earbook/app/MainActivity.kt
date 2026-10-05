@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.view.View
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
@@ -50,12 +51,54 @@ class MainActivity : AppCompatActivity() {
             openDocument.launch(arrayOf("text/*", "application/pdf", "application/octet-stream"))
         }
 
+        // M2：离线语音模型入口（就绪后隐藏）
+        binding.btnVoiceModel.setOnClickListener { downloadVoiceModel() }
+
         refreshList()
     }
 
     override fun onResume() {
         super.onResume()
         refreshList()
+        // 模型就绪即隐藏入口（下载完成/已就绪两种情况）
+        binding.btnVoiceModel.visibility =
+            if (com.earbook.app.tts.ModelManager.isReady(this)) View.GONE else View.VISIBLE
+    }
+
+    private var voiceModelDialog: AlertDialog? = null
+
+    private fun downloadVoiceModel() {
+        if (voiceModelDialog != null) return // 防重复点击
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.voice_model_download)
+            .setMessage(getString(R.string.voice_model_downloading, 0))
+            .setCancelable(false)
+            .show()
+        voiceModelDialog = dialog
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    com.earbook.app.tts.ModelManager.downloadIfNeeded(this@MainActivity) { p ->
+                        runOnUiThread {
+                            dialog.setMessage(
+                                getString(R.string.voice_model_downloading, (p * 100).toInt())
+                            )
+                        }
+                    }
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+            }
+            voiceModelDialog = null
+            dialog.dismiss()
+            Toast.makeText(
+                this@MainActivity,
+                if (ok) R.string.voice_model_ready else R.string.voice_model_failed,
+                Toast.LENGTH_LONG
+            ).show()
+            if (ok) binding.btnVoiceModel.visibility = View.GONE
+        }
     }
 
     private fun importBook(uri: Uri) {

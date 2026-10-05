@@ -22,5 +22,8 @@ interface TtsEngine {
         onChunk: (samples: FloatArray) -> Unit,
     ): Int
 
+    /** 整句合成（预取用）：返回完整 PCM——句级流水预缓存的原料 */
+    fun synthesizeFull(sentence: String, speed: Float = 1.0f): FloatArray
+
     fun release()
 }
