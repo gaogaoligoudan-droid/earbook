@@ -51,8 +51,11 @@ class MainActivity : AppCompatActivity() {
             openDocument.launch(arrayOf("text/*", "application/pdf", "application/octet-stream"))
         }
 
-        // M2：离线语音模型入口（就绪后隐藏）
+        // M2：离线语音模型入口（就绪后隐藏）+ 设置入口
         binding.btnVoiceModel.setOnClickListener { downloadVoiceModel() }
+        binding.btnSettings.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
 
         refreshList()
     }
