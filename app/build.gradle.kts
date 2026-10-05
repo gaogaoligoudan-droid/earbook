@@ -55,6 +55,9 @@ dependencies {
     // TTS 模型包解压（tar.bz2）——标准库无 BZip2
     implementation("org.apache.commons:commons-compress:1.27.1")
 
+    // M3-2 预渲染（charging+idle 约束任务）
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
     // instrumented smoke tests（Phase 1 CI）
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

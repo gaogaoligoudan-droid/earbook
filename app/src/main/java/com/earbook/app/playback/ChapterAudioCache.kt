@@ -78,8 +78,9 @@ class ChapterAudioCache(private val context: Context) {
         val f = fileFor(key)
         if (!f.exists()) return null
         touch(key)
+        // sidecar 句偏移（预渲染章节的句级切分）
+        val offsets = readOffsets(key)
         return RandomAccessFile(f, "r").use { raf ->
-            raf.seek(24) // fmt 之后已读，跳 RIFF 头直接解 fmt fields
             raf.seek(22); val bits = readLeShort(raf)
             raf.seek(24); val sampleRate = readLeInt(raf)
             raf.seek(40); val dataLen = readLeInt(raf)
@@ -91,14 +92,38 @@ class ChapterAudioCache(private val context: Context) {
             raf.readFully(bb.array())
             CachedChapter(
                 sampleRate = sampleRate,
-                samples = bb.asFloatBuffer().let { fb ->
-                    FloatArray(n).also { fb.get(it) }
-                },
+                samples = FloatArray(n).also { bb.asFloatBuffer().get(it) },
+                sentenceOffsets = offsets,
             )
         }
     }
 
-    data class CachedChapter(val sampleRate: Int, val samples: FloatArray)
+    private fun readOffsets(key: Key): LongArray {
+        val jf = File(root(), fileFor(key).nameWithoutExtension + ".json")
+        if (!jf.exists()) return LongArray(0)
+        return try {
+            val arr = JSONObject(jf.readText()).optJSONArray("sentenceOffsets") ?: return LongArray(0)
+            LongArray(arr.length()) { arr.getLong(it) }
+        } catch (_: Exception) {
+            LongArray(0)
+        }
+    }
+
+    data class CachedChapter(
+        val sampleRate: Int,
+        val samples: FloatArray,
+        /** 每句的起始帧偏移（末尾哨兵=总帧数）；空=未知切分（按整章播） */
+        val sentenceOffsets: LongArray = LongArray(0),
+    ) {
+        /** 取第 idx 句的 PCM（offsets 缺失时返回 null） */
+        fun sentenceAt(idx: Int): FloatArray? {
+            if (sentenceOffsets.size < 2) return null
+            if (idx < 0 || idx >= sentenceOffsets.size - 1) return null
+            val from = sentenceOffsets[idx].toInt()
+            val to = sentenceOffsets[idx + 1].toInt()
+            return samples.copyOfRange(from, minOf(to, samples.size))
+        }
+    }
 
     fun remove(key: Key) {
         fileFor(key).delete()

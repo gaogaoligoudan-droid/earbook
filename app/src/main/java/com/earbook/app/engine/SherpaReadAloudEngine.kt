@@ -59,12 +59,22 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
         stop()
         val engine = core ?: run { onDone?.invoke(utteranceId, false); return }
         stopped.set(false)
+        // M3-2 磁盘缓存命中路径：章缓存 sentenceAt 切句直接播（零合成 CPU）
+        val cached = cachedSentenceFor(utteranceId)
+        val cachedSr = if (cached != null) cachedSampleRateFor(utteranceId) else null
         currentWorker = Thread({
             try {
-                val sr = engine.sampleRate()
-                val t = obtainTrack(sr)
+                if (cached != null && cachedSr != null) {
+                    // 命中：零合成直接播
+                    val t = obtainTrack(cachedSr)
+                    t.play()
+                    val written = writeFloats(t, cached)
+                    drainAndFinish(t, written, utteranceId)
+                    return@Thread
+                }
+                // 常规路径：句内流式合成
+                val t = obtainTrack(engine.sampleRate())
                 t.play()
-                // 预取命中 → 直接播整句（合成等待归零）
                 val prefetched = synchronized(prefetchCache) { prefetchCache.remove(utteranceId) }
                 val written = if (prefetched != null) {
                     writeFloats(t, prefetched)
@@ -75,14 +85,7 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
                         writeFloats(t, chunk)
                     }
                 }
-                // 等播放追上写入（buffer drain）
-                while (!stopped.get() &&
-                    t.playbackHeadPosition < written * 0.999 // float 采样数即帧数
-                ) {
-                    Thread.sleep(60)
-                }
-                t.stop()
-                onDone?.invoke(utteranceId, !stopped.get())
+                drainAndFinish(t, written, utteranceId)
             } catch (e: InterruptedException) {
                 track?.stop()
                 onDone?.invoke(utteranceId, false)
@@ -93,6 +96,48 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
         }, "sherpa-speak").apply { priority = Process.THREAD_PRIORITY_URGENT_AUDIO }.also {
             it.start()
         }
+    }
+
+    private fun cachedSentenceFor(utteranceId: String): FloatArray? {
+        val ctx = bookContext ?: return null
+        val (ch, sn) = parseChapterSentence(utteranceId)
+        if (ch < 0) return null
+        return diskCache?.get(
+            com.earbook.app.playback.ChapterAudioCache.Key(ctx.first, ch, ctx.second)
+        )?.sentenceAt(sn)
+    }
+
+    private fun cachedSampleRateFor(utteranceId: String): Int? {
+        val ctx = bookContext ?: return null
+        val (ch, _) = parseChapterSentence(utteranceId)
+        if (ch < 0) return null
+        return diskCache?.get(
+            com.earbook.app.playback.ChapterAudioCache.Key(ctx.first, ch, ctx.second)
+        )?.sampleRate
+    }
+
+    /** 等播放追上写入后收尾回调（供缓存命中与流式路径共用） */
+    private fun drainAndFinish(t: AudioTrack, written: Int, utteranceId: String) {
+        while (!stopped.get() && t.playbackHeadPosition < written * 0.999) {
+            Thread.sleep(60)
+        }
+        t.stop()
+        onDone?.invoke(utteranceId, !stopped.get())
+    }
+
+    /** utteranceId "c{n}:s{n}" → (章, 句) */
+    private fun parseChapterSentence(id: String): Pair<Int, Int> {
+        val m = Regex("""c(\d+):s(\d+)""").find(id) ?: return -1 to -1
+        return (m.groupValues[1].toInt()) to (m.groupValues[2].toInt())
+    }
+
+    /** 磁盘缓存上下文（Service 播放时注入：当前书+音色） */
+    private var bookContext: Pair<String, String>? = null
+    private var diskCache: com.earbook.app.playback.ChapterAudioCache? = null
+
+    fun setBookContext(bookId: String, voice: String = com.earbook.app.playback.PrerenderManager.DEFAULT_VOICE) {
+        diskCache = diskCache ?: com.earbook.app.playback.ChapterAudioCache(appContext)
+        bookContext = bookId to voice
     }
 
     /** 预取：后台预合成下一句存内存（命中即播，句间零等待） */

@@ -228,6 +228,11 @@ class ReadAloudService : Service() {
             try {
                 val target = store.listBooks().firstOrNull { it.id == bookId } ?: return@launch
                 currentBookId = target.id
+                // M3-2：注入书上下文（磁盘缓存命中路径）+ 排队预渲染后续章（充电时自动执行）
+                (engine as? com.earbook.app.engine.SherpaReadAloudEngine)?.setBookContext(target.id)
+                com.earbook.app.playback.PrerenderManager.enqueue(
+                    this@ReadAloudService, target.id, chapterIndex + 1
+                )
                 val imported = withContext(Dispatchers.IO) {
                     BookImporter.import(
                         this@ReadAloudService,
