@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">EarBook 听书</string>
+    <string name="import_book">导入 TXT 小说</string>
+    <string name="empty_hint">书架空空如也\n点右下角 + 导入一本 TXT 开始听</string>
+</resources>

@@ -1,0 +1,13 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 耳机图标：头梁 + 左右耳罩，书卷棕配色 -->
+    <path
+        android:fillColor="#7B5E3B"
+        android:pathData="M54,26c-15.5,0 -28,12.5 -28,28v18c0,3.3 2.7,6 6,6h2c1.1,0 2,-0.9 2,-2V62c0,-1.1 -0.9,-2 -2,-2h-2c-1.1,0 -2,0.9 -2,2v-8c0,-13.3 10.7,-24 24,-24s24,10.7 24,24v8c0,-1.1 -0.9,-2 -2,-2h-2c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h2c3.3,0 6,-2.7 6,-6V54c0,-15.5 -12.5,-28 -28,-28z" />
+    <path
+        android:fillColor="#C99B5F"
+        android:pathData="M40,62h6v16c0,2.2 -1.8,4 -4,4h-2c-2.2,0 -4,-1.8 -4,-4V66c0,-2.2 1.8,-4 4,-4zM62,62h6c2.2,0 4,1.8 4,4v12c0,2.2 -1.8,4 -4,4h-2c-2.2,0 -4,-1.8 -4,-4V62z" />
+</vector>
