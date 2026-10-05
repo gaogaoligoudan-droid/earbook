@@ -52,7 +52,13 @@ dependencies {
     // PDF 文本提取（Apache 2.0，com.tom-roush 是 Apache PDFBox 的 Android 移植）
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 
+    // TTS 模型包解压（tar.bz2）——标准库无 BZip2
+    implementation("org.apache.commons:commons-compress:1.27.1")
+
     // instrumented smoke tests（Phase 1 CI）
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+
+    // JVM 单测（TextNormalizer/SentenceWindow 纯逻辑）
+    testImplementation("junit:junit:4.13.2")
 }
