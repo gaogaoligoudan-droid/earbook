@@ -55,9 +55,21 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
         }, "sherpa-init").apply { priority = Process.THREAD_PRIORITY_BACKGROUND }.start()
     }
 
+    /** 等待异步初始化完成（有界），供 speak 在冷启动窗口内使用 */
+    private fun waitForCore(timeoutMs: Long): SherpaTtsEngine? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            synchronized(this) { core }?.let { return it }
+            Thread.sleep(100)
+        }
+        return null
+    }
+
     override fun speak(text: String, utteranceId: String) {
         stop()
-        val engine = core ?: run { onDone?.invoke(utteranceId, false); return }
+        // 真机验证修复：模型冷加载需 10-30s，初始化窗口内 core==null 时等待而非秒败
+        // （否则服务侧连续 3 句秒败即熔断，永远等不到初始化完成）
+        val engine = waitForCore(30_000) ?: run { onDone?.invoke(utteranceId, false); return }
         stopped.set(false)
         // M3-2 磁盘缓存命中路径：章缓存 sentenceAt 切句直接播（零合成 CPU）
         val cached = cachedSentenceFor(utteranceId)
@@ -93,8 +105,11 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
                 track?.stop()
                 onDone?.invoke(utteranceId, false)
             }
-        }, "sherpa-speak").apply { priority = Process.THREAD_PRIORITY_URGENT_AUDIO }.also {
+        }, "sherpa-speak").also {
+            // 真机修复：THREAD_PRIORITY_URGENT_AUDIO 是 Process.setThreadPriority 的 Linux nice 值(-19)，
+            // 喂给 Thread.setPriority(1-10) 在 Android 9 真机抛 IllegalArgumentException（模拟器钳位不炸）
             it.start()
+            try { Process.setThreadPriority(it.id.toInt(), Process.THREAD_PRIORITY_URGENT_AUDIO) } catch (_: Throwable) { }
         }
     }
 

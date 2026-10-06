@@ -138,7 +138,10 @@ class ReadAloudService : Service() {
 
         // 引擎选择（M2）：本地 sherpa 模型就绪 → 离线引擎；否则回落系统 TTS
         engine = if (com.earbook.app.tts.ModelManager.isReady(this)) {
-            com.earbook.app.engine.SherpaReadAloudEngine(this)
+            com.earbook.app.engine.SherpaReadAloudEngine(this).also {
+                // 真机验证修复：必须触发异步初始化，否则 core 永远为 null，speak 秒败熔断
+                it.ensureModelLoadedAsync()
+            }
         } else {
             SystemReadAloudEngine(this)
         }
