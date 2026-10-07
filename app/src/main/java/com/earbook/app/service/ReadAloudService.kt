@@ -28,6 +28,7 @@ import com.earbook.app.book.Progress
 import com.earbook.app.book.BookImporter
 import com.earbook.app.engine.ReadAloudEngine
 import com.earbook.app.engine.SystemReadAloudEngine
+import com.earbook.app.R
 import com.earbook.app.store.PlaybackStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -61,7 +62,20 @@ class ReadAloudService : Service() {
         const val ACTION_STOP = "com.earbook.app.action.STOP"
         const val ACTION_NEXT = "com.earbook.app.action.NEXT"
         const val ACTION_PREVIOUS = "com.earbook.app.action.PREVIOUS"
+
+        // M2 追上缓存二选一（R9）：通知 action / MainActivity dialog 都汇到这里
+        const val ACTION_CHOICE_WAIT = "com.earbook.app.action.CHOICE_WAIT"
+        const val ACTION_CHOICE_SYSTEM = "com.earbook.app.action.CHOICE_SYSTEM"
         const val EXTRA_BOOK_ID = "bookId"
+
+        /** 追上弹窗待处理标记（MainActivity 前台时读走并弹 dialog） */
+        @Volatile var pendingCacheChoice = false
+
+        /** R9 起播门槛：先缓存前 N 章再起播 */
+        private const val STARTUP_GATE_CHAPTERS = 3
+
+        /** 追上弹窗通知 id（与播放通知/渲染通知分离） */
+        private const val PROMPT_NOTIFICATION_ID = 2002
 
         /** 瞬时降焦（提示音等）时压低的朗读音量 */
         private const val DUCK_VOLUME = 0.2f
@@ -108,6 +122,20 @@ class ReadAloudService : Service() {
     /** 连续合成失败计数（熔断用） */
     private var consecutiveFailures = 0
 
+    // ── M2 调度层状态 ──────────────────────────────────────
+    private val cache by lazy { com.earbook.app.playback.ChapterAudioCache(this) }
+    private val chapterPlayer by lazy { com.earbook.app.playback.ChapterPlayer(cache) }
+    @Volatile private var chapterMode = false      // 当前章走章级单轨（缓存命中路径）
+    @Volatile private var fallbackToSystem = false // 神经引擎已临时切系统语音（追上时用户选择）
+    @Volatile private var sessionChoice: String? = null // 追上二选一，会话内记住（R9）
+    @Volatile private var startupGate = false      // R9 起播门槛等待中（缓存前 N 章）
+    private var waitingForChapter = -1             // WAIT 模式等待渲染的章（-1=无）
+    private var sherpaEngine: com.earbook.app.engine.SherpaReadAloudEngine? = null
+
+    // 追上二选一选项值（sessionChoice 的取值）
+    private val CHOICE_WAIT = "wait"
+    private val CHOICE_SYSTEM = "system"
+
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS -> pause(autoResumeAfterFocus = false)
@@ -117,10 +145,13 @@ class ReadAloudService : Service() {
                 pause(autoResumeAfterFocus = true)
             }
             // 短提示音等瞬时降焦：压低音量继续播（不中断）
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ->
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 engine.setVolume(DUCK_VOLUME)
+                chapterPlayer.setVolume(DUCK_VOLUME) // 章级单轨同压（M2）
+            }
             AudioManager.AUDIOFOCUS_GAIN -> {
                 engine.setVolume(1f)
+                chapterPlayer.setVolume(1f)
                 if (pausedByTransientFocus) {
                     pausedByTransientFocus = false
                     playCurrent()
@@ -141,6 +172,7 @@ class ReadAloudService : Service() {
             com.earbook.app.engine.SherpaReadAloudEngine(this).also {
                 // 真机验证修复：必须触发异步初始化，否则 core 永远为 null，speak 秒败熔断
                 it.ensureModelLoadedAsync()
+                sherpaEngine = it
             }
         } else {
             SystemReadAloudEngine(this)
@@ -180,6 +212,12 @@ class ReadAloudService : Service() {
             IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        // M2：RenderService 渲染事件（同进程直连）→ 服务侧分流（WAIT 续播/回切提示/门槛唤醒）
+        RenderEvents.serviceListener = object : RenderEvents.Listener {
+            override fun onRenderEvent(e: RenderEvents.Event) {
+                scope.launch { onRenderEvent(e) }
+            }
+        }
         createChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
     }
@@ -195,6 +233,17 @@ class ReadAloudService : Service() {
             ACTION_NEXT -> nextChapter()
             ACTION_PREVIOUS -> previousChapter()
             ACTION_STOP -> stopSelf()
+            // M2 追上二选一（通知 action / MainActivity dialog 汇入口）
+            ACTION_CHOICE_WAIT -> {
+                sessionChoice = CHOICE_WAIT
+                cancelChoicePrompt()
+                startWaitRender()
+            }
+            ACTION_CHOICE_SYSTEM -> {
+                sessionChoice = CHOICE_SYSTEM
+                cancelChoicePrompt()
+                if (!isSpeaking) resumeOrPlay()
+            }
         }
         return START_NOT_STICKY
     }
@@ -205,6 +254,8 @@ class ReadAloudService : Service() {
         unregisterReceiver(noisyReceiver)
         mediaSession.isActive = false
         mediaSession.release()
+        if (chapterMode) { chapterMode = false; chapterPlayer.stop() }
+        RenderEvents.serviceListener = null
         engine.shutdown()
         abandonFocus()
         scope.cancel()
@@ -231,11 +282,13 @@ class ReadAloudService : Service() {
             try {
                 val target = store.listBooks().firstOrNull { it.id == bookId } ?: return@launch
                 currentBookId = target.id
-                // M3-2：注入书上下文（磁盘缓存命中路径）+ 排队预渲染后续章（充电时自动执行）
+                // M2 会话状态重置（换书=新会话，R9 弹窗选择不跨书）
+                sessionChoice = null
+                startupGate = false
+                waitingForChapter = -1
+                fallbackToSystem = false
+                // 磁盘缓存命中路径：注入书上下文（音色缓存键随动）
                 (engine as? com.earbook.app.engine.SherpaReadAloudEngine)?.setBookContext(target.id)
-                com.earbook.app.playback.PrerenderManager.enqueue(
-                    this@ReadAloudService, target.id, chapterIndex + 1
-                )
                 val imported = withContext(Dispatchers.IO) {
                     BookImporter.import(
                         this@ReadAloudService,
@@ -249,7 +302,21 @@ class ReadAloudService : Service() {
                 sentenceIndex = saved.sentenceIndex.coerceIn(0, (chapters[chapterIndex].sentenceCount - 1).coerceAtLeast(0))
                 consecutiveFailures = 0
                 updateMetadata()
-                playCurrent()
+                // M2 调度（R9 起播门槛 + R8b 授权映射）：
+                // 神经模式且当前章未缓存 → 先渲 min(3, 全书) 章再起播（进度见渲染通知）
+                if (sherpaEngine != null && !isChapterCached(chapterIndex)) {
+                    startupGate = true
+                    val n = minOf(STARTUP_GATE_CHAPTERS, chapters.size)
+                    RenderService.start(this@ReadAloudService, target.id, chapterIndex, readyAfter = n)
+                    Toast.makeText(
+                        this@ReadAloudService,
+                        "首次播放：先缓存 $n 章后自动开始（进度见通知栏）",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    startBackgroundQueue(chapterIndex + 1)
+                    playCurrent()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "导入失败: ${e.message}", e)
                 // 用户必须感知失败原因（扫描版 PDF、文件损坏等），不能静默
@@ -267,6 +334,22 @@ class ReadAloudService : Service() {
             // 本章播完 → 下一章
             nextChapter()
             return
+        }
+        if (startupGate) {
+            // R9 起播门槛进行中：等 StartupReady 唤醒，不抢跑
+            Toast.makeText(this, "正在缓存，完成后自动开始", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // ── M2 章级路径（R6：缓存命中整章一条轨）与追上检测（R9）──
+        if (sherpaEngine != null) {
+            if (isChapterCached(chapterIndex)) {
+                if (fallbackToSystem) switchToSherpa(notify = true) // 缓存跟上，边界自然回切
+                if (tryPlayChapterMonolithic()) return
+                // 单轨启动失败 → 落逐句兜底
+            } else if (handleCacheCaughtUp()) {
+                return // 追上流程已处理（暂停等渲 / 切系统语音后由 choice 分流）
+            }
+            // 未命中且 choice=system：已在 switchToSystem 换引擎，继续逐句
         }
         requestFocus() || return
         isSpeaking = true
@@ -287,9 +370,232 @@ class ReadAloudService : Service() {
         return next.sentences.firstOrNull()?.let { Triple(cIdx + 1, 0, it) }
     }
 
+    // ── M2 调度层：章级播放 / 追上检测（R9）/ 授权映射（R8b）/ 引擎切换 ──
+
+    private fun isChapterCached(idx: Int): Boolean {
+        val bid = book?.id ?: return false
+        return cache.has(com.earbook.app.playback.ChapterAudioCache.Key(bid, idx, com.earbook.app.tts.VoicePrefs.cacheKey(this)))
+    }
+
+    /** R8b 后台推进队列的授权映射：电池=前台服务随时渲；仅插电/未问=WorkManager（charging） */
+    private fun startBackgroundQueue(from: Int) {
+        val bid = book?.id ?: return
+        when (com.earbook.app.playback.RenderPrefs.auth(this)) {
+            com.earbook.app.playback.RenderPrefs.BATTERY ->
+                RenderService.start(this, bid, from, readyAfter = 0)
+            else ->
+                com.earbook.app.playback.PrerenderManager.enqueue(this, bid, from)
+        }
+    }
+
+    /** 章级单轨播放（R6）：当前章已缓存时整章一条 AudioTrack 播到底。返回 false=启动失败走逐句 */
+    private fun tryPlayChapterMonolithic(): Boolean {
+        val bid = book?.id ?: return false
+        val key = com.earbook.app.playback.ChapterAudioCache.Key(
+            bid, chapterIndex, com.earbook.app.tts.VoicePrefs.cacheKey(this)
+        )
+        requestFocus() || return false
+        chapterPlayer.play(key, sentenceIndex, object : com.earbook.app.playback.ChapterPlayer.Callbacks {
+            override fun onSentenceEnter(sentence: Int) {
+                scope.launch {
+                    if (!chapterMode) return@launch
+                    sentenceIndex = sentence
+                    saveProgress()
+                    updateState()
+                }
+            }
+
+            override fun onChapterDone() {
+                scope.launch {
+                    if (!chapterMode) return@launch
+                    chapterMode = false
+                    nextChapter()
+                }
+            }
+
+            override fun onError(msg: String) {
+                scope.launch {
+                    if (!chapterMode) return@launch
+                    Log.w(TAG, "章级单轨播放失败: $msg")
+                    chapterMode = false
+                    runCatching { cache.remove(key) } // 缓存条目损坏：清除，幂等重渲
+                    playCurrent() // 重新判定（无缓存 → 追上流程 / 逐句兜底）
+                }
+            }
+        })
+        chapterMode = true
+        isSpeaking = true
+        updateState()
+        updateNotification()
+        return true
+    }
+
+    /**
+     * 追上缓存（R9）：当前章未命中时的分流。
+     * @return true=已处理（暂停等渲/弹窗），调用方不得再走 engine.speak
+     */
+    private fun handleCacheCaughtUp(): Boolean {
+        when (sessionChoice) {
+            CHOICE_SYSTEM -> { switchToSystem(); return false } // 系统语音逐句继续
+            CHOICE_WAIT -> { startWaitRender(); return true }
+        }
+        // 本会话未选过：暂停 + 二选一（前台 dialog / 通知双 action，R9）
+        pause(autoResumeAfterFocus = false)
+        promptCacheChoice()
+        return true
+    }
+
+    /** WAIT 路径：暂停起渲当前章（用户明确要等它，不受授权限制），ChapterDone 自动续播 */
+    private fun startWaitRender() {
+        val bid = book?.id ?: return
+        if (waitingForChapter >= 0) return // 已在等待
+        waitingForChapter = chapterIndex
+        isSpeaking = false
+        saveProgress()
+        abandonFocus()
+        updateState()
+        updateNotification()
+        RenderService.start(this, bid, chapterIndex, readyAfter = 0)
+        Toast.makeText(this, "本章未缓存，渲染完成后自动继续", Toast.LENGTH_SHORT).show()
+    }
+
+    /** 追上二选一提示：高优先级通知（灭屏可用）；MainActivity 前台时改为弹 dialog */
+    private fun promptCacheChoice() {
+        pendingCacheChoice = true
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val waitPi = PendingIntent.getService(
+            this, ACTION_CHOICE_WAIT.hashCode(),
+            Intent(this, ReadAloudService::class.java).setAction(ACTION_CHOICE_WAIT),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val sysPi = PendingIntent.getService(
+            this, ACTION_CHOICE_SYSTEM.hashCode(),
+            Intent(this, ReadAloudService::class.java).setAction(ACTION_CHOICE_SYSTEM),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val n = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_add)
+            .setContentTitle("播放追上缓存")
+            .setContentText("本章还没缓存好，怎么继续？")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this, 0, Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+            .addAction(android.R.drawable.ic_media_pause, "等缓存好再播", waitPi)
+            .addAction(android.R.drawable.ic_media_play, "用系统语音继续", sysPi)
+            .build()
+        runCatching { nm.notify(PROMPT_NOTIFICATION_ID, n) }
+    }
+
+    private fun cancelChoicePrompt() {
+        pendingCacheChoice = false
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        runCatching { nm.cancel(PROMPT_NOTIFICATION_ID) }
+    }
+
+    /** 切系统语音（追上时「继续听」的选择）：释放神经引擎省内存，回切冷加载（章边界可接受） */
+    private fun switchToSystem() {
+        if (fallbackToSystem) return
+        fallbackToSystem = true
+        runCatching { engine.stop() }
+        sherpaEngine?.shutdown()
+        sherpaEngine = null
+        engine = SystemReadAloudEngine(this).also { e ->
+            e.setOnDoneListener { id, ok -> scope.launch { onSentenceDone(id, ok) } }
+            e.setOnInitListener { ok ->
+                scope.launch {
+                    if (!ok) {
+                        Toast.makeText(this@ReadAloudService, "系统 TTS 初始化失败", Toast.LENGTH_SHORT).show()
+                        pause()
+                    }
+                }
+            }
+        }
+        Toast.makeText(this, "已切系统语音，缓存跟上后自动切回", Toast.LENGTH_LONG).show()
+    }
+
+    /** 缓存跟上后回切神经语音（边界自然切换；模型异步加载，章级单轨播放不依赖它就绪） */
+    private fun switchToSherpa(notify: Boolean) {
+        if (!fallbackToSystem) return
+        fallbackToSystem = false
+        runCatching { engine.stop() }
+        engine = (com.earbook.app.engine.SherpaReadAloudEngine(this).also { se ->
+            sherpaEngine = se
+            se.ensureModelLoadedAsync()
+            se.setOnDoneListener { id, ok -> scope.launch { onSentenceDone(id, ok) } }
+            se.setOnInitListener { ok ->
+                scope.launch {
+                    if (!ok) {
+                        Toast.makeText(this@ReadAloudService, "神经引擎初始化失败", Toast.LENGTH_SHORT).show()
+                        pause()
+                    }
+                }
+            }
+            book?.id?.let { se.setBookContext(it) }
+        })
+        if (notify) Toast.makeText(this, "缓存已跟上，切回神经语音", Toast.LENGTH_SHORT).show()
+    }
+
+    /** RenderService 事件分流（WAIT 续播 / 门槛唤醒 / 回切提示 / 失败降级） */
+    private fun onRenderEvent(e: RenderEvents.Event) {
+        val bid = book?.id ?: return
+        when (e) {
+            is RenderEvents.Event.ChapterDone -> {
+                if (e.bookId != bid) return
+                when {
+                    e.chapter == waitingForChapter -> {
+                        waitingForChapter = -1
+                        if (!isSpeaking) resumeOrPlay()
+                    }
+                    fallbackToSystem && e.chapter == chapterIndex ->
+                        Toast.makeText(this, "本章神经语音已就绪，播完自动切回", Toast.LENGTH_SHORT).show()
+                }
+            }
+            is RenderEvents.Event.StartupReady -> {
+                if (e.bookId == bid && startupGate) {
+                    startupGate = false
+                    startBackgroundQueue(chapterIndex + e.chapters)
+                    resumeOrPlay()
+                }
+            }
+            is RenderEvents.Event.Failed -> {
+                if (e.bookId != bid) return
+                when {
+                    e.chapter == waitingForChapter -> {
+                        waitingForChapter = -1
+                        Toast.makeText(this, "缓存渲染失败，改用逐句合成播放", Toast.LENGTH_LONG).show()
+                        resumeOrPlay()
+                    }
+                    startupGate -> {
+                        startupGate = false
+                        Toast.makeText(this, "预渲染失败，直接起播", Toast.LENGTH_SHORT).show()
+                        playCurrent()
+                    }
+                }
+            }
+            is RenderEvents.Event.Cancelled -> {
+                if (waitingForChapter >= 0 || startupGate) {
+                    waitingForChapter = -1
+                    startupGate = false
+                    sessionChoice = null // 用户主动叫停缓存：会话选择一并作废，下次重新问
+                    resumeOrPlay()
+                }
+            }
+        }
+    }
+
     private fun pause(autoResumeAfterFocus: Boolean = false) {
         if (!isSpeaking) return
         isSpeaking = false
+        if (chapterMode) {
+            // 章级单轨：停轨（续播从当前句重放，与逐句路径语义一致）
+            chapterMode = false
+            chapterPlayer.stop()
+        }
         engine.stop()
         saveProgress()
         // 暂停即释放焦点（来电等需自动续播的场景除外——放弃焦点将收不到 GAIN 回调）

@@ -22,12 +22,15 @@ object PrerenderManager {
     const val DEFAULT_VOICE = "kokoro30" // 与 VoicePrefs.sid（试听拍板 7 号女声）对齐；男声切换时由调用方传 kokoro70
     private const val BATCH = 3 // 一次预渲染 3 章
 
-    /** 渲染单章：逐句合成→拼接→WAV+句偏移落盘。幂等（已缓存跳过）。返回渲染的章数。 */
+    /** 渲染单章：逐句合成→拼接→AAC+句偏移落盘。幂等（已缓存跳过）。
+     *  shouldStop：协作式取消（RenderService 通知栏叫停）——句间检查，半成品丢弃，
+     *  幂等闸门保证下次重渲完整章。返回 false = 失败或取消（调用方看自身取消标志区分）。 */
     fun renderChapter(
         context: Context,
         bookId: String,
         chapterIndex: Int,
         voice: String = DEFAULT_VOICE,
+        shouldStop: () -> Boolean = { false },
     ): Boolean {
         val cache = ChapterAudioCache(context)
 
@@ -67,6 +70,7 @@ object PrerenderManager {
         if (cache.has(key)) return true
 
         if (!ModelManager.isReady(context)) return false
+        if (shouldStop()) return false
         // 音色随 voice 缓存键走（kokoro30/kokoro70）：渲染音色与缓存命名空间一致
         val sid = voice.removePrefix("kokoro").toIntOrNull() ?: SherpaTtsEngine.KOKORO_DEFAULT_SPEAKER
         val engine = SherpaTtsEngine(context, ModelManager.modelDir(context), sid)
@@ -77,6 +81,7 @@ object PrerenderManager {
             var acc = 0L
             offsets.add(0)
             for (s in sentences) {
+                if (shouldStop()) return false
                 val pcm = engine.synthesizeFull(s)
                 if (pcm.isEmpty()) continue
                 all.add(pcm)

@@ -40,6 +40,7 @@ class ChapterAudioCache(private val context: Context) {
         val aac = try {
             AacCodec.encodePcmToAacAdts(samples, sampleRate)
         } catch (e: Exception) {
+            android.util.Log.w("ChapterAudioCache", "AAC 编码失败降级 WAV: ${e.javaClass.simpleName}: ${e.message}", e)
             null
         }
         val f = if (aac != null) aacFile(key) else wavFile(key)
@@ -84,6 +85,27 @@ class ChapterAudioCache(private val context: Context) {
 
     /** 本缓存中该章实际文件（管理页显示/删除用） */
     fun existingFile(key: Key): File? = aacFile(key).takeIf { it.exists() } ?: wavFile(key).takeIf { it.exists() }
+
+    /** 章级条目（M2-b 章级单轨播放器用）：只取文件与元数据，不解码——全章 PCM 不进内存 */
+    data class Entry(
+        val file: File,
+        val format: String,      // "aac" | "wav"
+        val sampleRate: Int,
+        val frames: Long,        // 总帧数（float 样本口径）
+        val sentenceOffsets: LongArray,
+    )
+
+    fun getEntry(key: Key): Entry? {
+        val f = existingFile(key) ?: return null
+        val meta = readMeta(f) ?: return null
+        return Entry(
+            file = f,
+            format = meta.optString("format", if (f.extension == "aac") "aac" else "wav"),
+            sampleRate = meta.optInt("sampleRate", 24000),
+            frames = meta.optLong("frames", 0),
+            sentenceOffsets = readOffsets(f),
+        )
+    }
 
     fun remove(key: Key) {
         existingFile(key)?.let { f ->

@@ -66,6 +66,8 @@ class MainActivity : AppCompatActivity() {
         // 模型就绪即隐藏入口（下载完成/已就绪两种情况）
         binding.btnVoiceModel.visibility =
             if (com.earbook.app.tts.ModelManager.isReady(this)) View.GONE else View.VISIBLE
+        // M2：追上二选一——服务发了提示而用户此刻回到前台，改用 dialog 承接
+        maybeShowCacheChoiceDialog()
     }
 
     private var voiceModelDialog: AlertDialog? = null
@@ -140,13 +142,60 @@ class MainActivity : AppCompatActivity() {
                 val p = store.getProgress(book.id)
                 "进度：第 ${p.chapterIndex + 1} 章 · 第 ${p.sentenceIndex + 1} 句"
             },
-            onClick = { book -> ReadAloudService.start(this, book.id) },
+            onClick = { book -> startPlayback(book.id) },
             onLongClick = { book -> confirmRemove(book) }
         )
         binding.recyclerBooks.layoutManager = LinearLayoutManager(this)
         binding.recyclerBooks.adapter = adapter
         binding.emptyHint.visibility = if (books.isEmpty()) android.view.View.VISIBLE
         else android.view.View.GONE
+    }
+
+    /** R8b：首触后台缓存先问授权（记住选择），随后交给服务 */
+    private fun startPlayback(bookId: String) {
+        val rp = com.earbook.app.playback.RenderPrefs
+        if (rp.auth(this) == rp.ASK) {
+            AlertDialog.Builder(this)
+                .setTitle("后台离线缓存")
+                .setMessage(
+                    "边听边缓存需要后台渲染音频：\n\n" +
+                        "· 允许后台跑——随时缓存，稍耗电\n" +
+                        "· 仅充电时——更省电，插上电源才缓存"
+                )
+                .setPositiveButton("允许后台跑") { _, _ ->
+                    rp.setAuth(this, rp.BATTERY)
+                    ReadAloudService.start(this, bookId)
+                }
+                .setNegativeButton("仅充电时") { _, _ ->
+                    rp.setAuth(this, rp.CHARGING)
+                    ReadAloudService.start(this, bookId)
+                }
+                .setCancelable(false)
+                .show()
+            return
+        }
+        ReadAloudService.start(this, bookId)
+    }
+
+    /** R9 追上二选一（服务把 pendingCacheChoice 置位时，前台 dialog 承接） */
+    private fun maybeShowCacheChoiceDialog() {
+        if (!ReadAloudService.pendingCacheChoice) return
+        ReadAloudService.pendingCacheChoice = false // 读走；通知由服务在选择后撤销
+        AlertDialog.Builder(this)
+            .setTitle("播放追上缓存")
+            .setMessage(
+                "本章还没缓存好：\n\n" +
+                    "· 等缓存好再播——保持离线神经语音\n" +
+                    "· 用系统语音继续——立即可听，缓存跟上后自动切回"
+            )
+            .setPositiveButton("等缓存好再播") { _, _ ->
+                ReadAloudService.send(this, ReadAloudService.ACTION_CHOICE_WAIT)
+            }
+            .setNegativeButton("用系统语音继续") { _, _ ->
+                ReadAloudService.send(this, ReadAloudService.ACTION_CHOICE_SYSTEM)
+            }
+            .setCancelable(false)
+            .show()
     }
 
     private fun confirmRemove(book: com.earbook.app.book.Book) {
