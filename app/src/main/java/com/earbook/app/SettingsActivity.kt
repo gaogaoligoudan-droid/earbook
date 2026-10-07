@@ -1,7 +1,6 @@
 package com.earbook.app
 
 import android.os.Bundle
-import android.widget.SeekBar
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.earbook.app.databinding.ActivitySettingsBinding
@@ -50,11 +49,10 @@ class SettingsActivity : AppCompatActivity() {
         refresh()
     }
 
-    // ── 缓存管理 ──────────────────────────────────────────
+    // ── 缓存管理（M1：无上限无 LRU，R11 拍板；滑块已移除） ──
 
     private fun setupCacheSection() {
         val cache = ChapterAudioCache(this)
-        val prefs = getSharedPreferences("earbook", MODE_PRIVATE)
 
         fun fmt(mb: Long): String = when {
             mb >= 1024 -> "%.1fGB".format(mb / 1024.0)
@@ -64,37 +62,9 @@ class SettingsActivity : AppCompatActivity() {
         fun refreshCacheStats() {
             val audioMb = cache.totalBytes() / (1024 * 1024)
             val modelMb = 147L // kokoro int8 常驻模型
-            binding.tvCacheStatus.text = "语音缓存：${fmt(audioMb)} ｜ 模型：${fmt(modelMb)}（常驻）"
+            binding.tvCacheStatus.text =
+                "语音缓存：${fmt(audioMb)}（不设上限，按书管理） ｜ 模型：${fmt(modelMb)}（常驻）"
         }
-
-        val limitMb = prefs.getInt(CACHE_LIMIT_MB, 200)
-        binding.sbCacheLimit.min = 100
-        binding.sbCacheLimit.max = 300
-        binding.sbCacheLimit.progress = limitMb
-        binding.tvCacheLimit.text = "${limitMb}MB"
-
-        // 滑块变更即时生效：超限 LRU 静默清理 + toast 反馈（不弹确认框——拉滑块意图明确）
-        binding.sbCacheLimit.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
-                binding.tvCacheLimit.text = "${progress}MB"
-            }
-
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
-
-            override fun onStopTrackingTouch(sb: SeekBar?) {
-                val newLimit = sb?.progress ?: return
-                val freed = cache.shrinkTo(newLimit * 1024L * 1024, anchorBookId = null)
-                prefs.edit().putInt(CACHE_LIMIT_MB, newLimit).apply()
-                refreshCacheStats()
-                if (freed > 0) {
-                    Toast.makeText(
-                        this@SettingsActivity,
-                        "已释放 ${freed / (1024 * 1024)}MB",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
-        })
 
         binding.btnClearCache.setOnClickListener {
             cache.clearAll()
@@ -120,7 +90,6 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     companion object {
-        const val CACHE_LIMIT_MB = "cache_limit_mb"
         const val DEEPSEEK_KEY = "deepseek_key"
     }
 }

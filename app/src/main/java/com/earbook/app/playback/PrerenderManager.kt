@@ -37,17 +37,29 @@ object PrerenderManager {
         }.getOrElse { return false }
         val chapter = chapters.getOrNull(chapterIndex) ?: return false
 
-        // M3-1：AI 优化（BYOK 有 key 时；Worker 后台网络，播放路径不受影响）
+        // M3-1→M1：AI 优化（BYOK 有 key 时）+ **章级幂等闸门**（R7 硬约束：
+        // isOptimized 的章永不再调 API；失败标记后不自动重试，按原文缓存）
+        val registry = com.earbook.app.book.AssetRegistry(context)
         val apiKey = context.getSharedPreferences("earbook", Context.MODE_PRIVATE)
             .getString("deepseek_key", "").orEmpty()
-        var textVersion = 0
+        var textVersion = registry.textVersion(bookId, chapterIndex)
         var sentences = chapter.sentences
-        if (apiKey.isNotEmpty()) {
+        if (apiKey.isNotEmpty() && !registry.isOptimized(bookId, chapterIndex)) {
             val raw = sentences.joinToString("\n")
             val optimized = com.earbook.app.ai.AiTextOptimizer.optimizeChapter(apiKey, raw)
             if (optimized != null && optimized.length > raw.length / 2) {
-                sentences = com.earbook.app.book.SentenceSplitter.split(optimized)
-                textVersion = 1
+                // CJK 保结构（业界对照报告硬雷）：优化结果重新分句，结构异常作废
+                val resplit = runCatching {
+                    com.earbook.app.book.SentenceSplitter.split(optimized)
+                }.getOrNull()
+                if (resplit != null && resplit.size >= sentences.size / 2) {
+                    sentences = resplit
+                    textVersion = registry.markOptimized(bookId, chapterIndex)
+                } else {
+                    registry.markOptimizeFailed(bookId, chapterIndex)
+                }
+            } else {
+                registry.markOptimizeFailed(bookId, chapterIndex)
             }
         }
 
@@ -77,17 +89,10 @@ object PrerenderManager {
                 System.arraycopy(p, 0, total, pos, p.size)
                 pos += p.size
             }
-            // 限额（锚定当前书）
-            val limitMb = context.getSharedPreferences("earbook", Context.MODE_PRIVATE)
-                .getInt("cache_limit_mb", 200)
-            val freed = cache.shrinkTo(
-                limitMb * 1024L * 1024 - total.size * 4,
-                anchorBookId = bookId,
-            )
+            // M1：AAC 落盘（无上限无 LRU，R11 拍板）+ 资产登记（R8c 徽标/管理页）
             cache.put(key, sr, total, offsets.toLongArray())
-            if (freed > 0) {
-                cache.shrinkTo(limitMb * 1024L * 1024, anchorBookId = bookId)
-            }
+            val f = cache.existingFile(key)
+            if (f != null) registry.markCached(bookId, chapterIndex, voice, f.length())
         } finally {
             engine.release()
         }
