@@ -17,12 +17,16 @@ import java.io.File
 class SherpaTtsEngine(
     @Suppress("unused") context: Context,
     private val modelDir: File,
-    private val speakerId: Int = KOKORO_DEFAULT_SPEAKER,
+    @Volatile var speakerId: Int = KOKORO_DEFAULT_SPEAKER,
 ) : TtsEngine {
 
     companion object {
-        // kokoro multi-lang v1.1：中文女声在 0-10 区（zh 声区），默认 0 号（zf_xiaobei 系）
-        const val KOKORO_DEFAULT_SPEAKER = 0
+        // kokoro multi-lang v1.1 声表（官方）：0=af_maple 美式女声、1=af_sol、2=bf_vale，
+        // 3-57 中文女声（zf_*），58-102 中文男声（zm_*）。
+        // 2026-10-07 真机十声试听用户拍板：7 号女声(sid=30) + 10 号男声(sid=70)。
+        const val KOKORO_DEFAULT_SPEAKER = 30
+        const val SPEAKER_FEMALE = 30
+        const val SPEAKER_MALE = 70
         const val MODEL_DIR_NAME = "kokoro-int8-multi-lang-v1_1"
         const val MODEL_URL =
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2"
@@ -55,7 +59,7 @@ class SherpaTtsEngine(
             dictDir = "$dir/dict",
         )
         return OfflineTtsConfig(
-            model = OfflineTtsModelConfig(kokoro = kokoro, numThreads = 2, provider = "cpu"),
+            model = OfflineTtsModelConfig(kokoro = kokoro, numThreads = 4, provider = "cpu"),
             // 引擎内置中文 TN（数字/日期/电话）
             ruleFsts = "$dir/number-zh.fst,$dir/date-zh.fst,$dir/phone-zh.fst",
         )

@@ -33,7 +33,11 @@ class PrerenderWorker(
         for (i in from until from + count) {
             if (isStopped) break
             val ok = runCatching {
-                PrerenderManager.renderChapter(applicationContext, bookId, i)
+                // 音色跟当前偏好（切换后 idle 预渲也用新音色，缓存命名空间一致）
+                PrerenderManager.renderChapter(
+                    applicationContext, bookId, i,
+                    com.earbook.app.tts.VoicePrefs.cacheKey(applicationContext),
+                )
             }.getOrDefault(false)
             if (ok) done++
             Log.i(TAG, "预渲染 章$i → $ok")

@@ -22,8 +22,11 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
 
     private val appContext = context.applicationContext
     private var core: SherpaTtsEngine? = null
-    private var track: AudioTrack? = null
-    private var trackSampleRate = 0
+    @Volatile private var currentTrack: AudioTrack? = null
+
+    private companion object {
+        private const val TAG = "SherpaEngine"
+    }
 
     @Volatile private var currentWorker: Thread? = null
     private val stopped = AtomicBoolean(false)
@@ -43,6 +46,7 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
                         core = SherpaTtsEngine(
                             appContext,
                             com.earbook.app.tts.ModelManager.modelDir(appContext),
+                            com.earbook.app.tts.VoicePrefs.sid(appContext),
                         )
                         // 触发 JNI 加载与首句预热
                         core!!.sampleRate()
@@ -67,6 +71,12 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
 
     override fun speak(text: String, utteranceId: String) {
         stop()
+        // 音色切换即时生效：每句开始时同步偏好（引擎已加载则原地换 sid，无需重建）
+        core?.let { c ->
+            val wantSid = com.earbook.app.tts.VoicePrefs.sid(appContext)
+            if (c.speakerId != wantSid) c.speakerId = wantSid
+            bookContext = bookContext?.copy(second = com.earbook.app.tts.VoicePrefs.cacheKey(appContext))
+        }
         // 真机验证修复：模型冷加载需 10-30s，初始化窗口内 core==null 时等待而非秒败
         // （否则服务侧连续 3 句秒败即熔断，永远等不到初始化完成）
         val engine = waitForCore(30_000) ?: run { onDone?.invoke(utteranceId, false); return }
@@ -75,35 +85,46 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
         val cached = cachedSentenceFor(utteranceId)
         val cachedSr = if (cached != null) cachedSampleRateFor(utteranceId) else null
         currentWorker = Thread({
+            var t: AudioTrack? = null
             try {
-                if (cached != null && cachedSr != null) {
-                    // 命中：零合成直接播
-                    val t = obtainTrack(cachedSr)
-                    t.play()
-                    val written = writeFloats(t, cached)
-                    drainAndFinish(t, written, utteranceId)
+                var audio: FloatArray? = cached
+                var sr = cachedSr ?: 0
+                if (audio == null) {
+                    val prefetched = synchronized(prefetchCache) { prefetchCache.remove(utteranceId) }
+                    // 整句先合成再播：RTF>1 设备（真机实测 ~10）流式边合成边播必然中途 underrun，
+                    // 且 Android 9 的 underrun 轨永不恢复 → 句子被掐断。数据全在手后写入永远领先播放头。
+                    // 句间间隔（合成耗时）由预渲染缓存兜底（PrerenderManager/磁盘缓存路径）。
+                    audio = prefetched ?: run {
+                        if (stopped.get()) throw InterruptedException()
+                        engine.synthesizeFull(text)
+                    }
+                    sr = engine.sampleRate()
+                }
+                // 模型对极短/非常规文本可能返回空——按跳过处理（推进不熔断）
+                if (audio!!.isEmpty()) {
+                    android.util.Log.w(TAG, "empty audio for $utteranceId, skip")
+                    onDone?.invoke(utteranceId, true)
                     return@Thread
                 }
-                // 常规路径：句内流式合成
-                val t = obtainTrack(engine.sampleRate())
-                t.play()
-                val prefetched = synchronized(prefetchCache) { prefetchCache.remove(utteranceId) }
-                val written = if (prefetched != null) {
-                    writeFloats(t, prefetched)
-                    prefetched.size
-                } else {
-                    engine.synthesize(text) { chunk ->
-                        if (stopped.get()) throw InterruptedException()
-                        writeFloats(t, chunk)
-                    }
-                }
-                drainAndFinish(t, written, utteranceId)
+                t = obtainTrack(sr).also { it.play() }
+                val written = writeFloats(t!!, audio!!)
+                val t0 = android.os.SystemClock.elapsedRealtime()
+                drainAndFinish(t!!, written, utteranceId)
+                android.util.Log.i(
+                    TAG,
+                    "speak $utteranceId: audio=${audio!!.size}f written=${written}f " +
+                        "drain=${android.os.SystemClock.elapsedRealtime() - t0}ms"
+                )
             } catch (e: InterruptedException) {
-                track?.stop()
+                currentTrack?.stop()
                 onDone?.invoke(utteranceId, false)
             } catch (e: Throwable) {
-                track?.stop()
+                android.util.Log.e(TAG, "speak $utteranceId failed", e)
+                currentTrack?.stop()
                 onDone?.invoke(utteranceId, false)
+            } finally {
+                t?.release()
+                if (currentTrack === t) currentTrack = null
             }
         }, "sherpa-speak").also {
             // 真机修复：THREAD_PRIORITY_URGENT_AUDIO 是 Process.setThreadPriority 的 Linux nice 值(-19)，
@@ -133,8 +154,20 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
 
     /** 等播放追上写入后收尾回调（供缓存命中与流式路径共用） */
     private fun drainAndFinish(t: AudioTrack, written: Int, utteranceId: String) {
+        // 真机（Mi Note 3/Android 9）实测：track 播放中 underrun 会被系统直接停轨（flinger 状态 0x009），
+        // playbackHeadPosition 随之冻结——若只比 head<written 会死循环卡死整条播放链。
+        // 逃生舱：头部停滞 1.5s（轨死）即跳出，按已完成推进（句尾可能被截，优于整卡死）。
+        var lastHead = -1
+        var lastProgressMs = android.os.SystemClock.elapsedRealtime()
         while (!stopped.get() && t.playbackHeadPosition < written * 0.999) {
             Thread.sleep(60)
+            val head = t.playbackHeadPosition
+            if (head != lastHead) {
+                lastHead = head
+                lastProgressMs = android.os.SystemClock.elapsedRealtime()
+            } else if (android.os.SystemClock.elapsedRealtime() - lastProgressMs > 1500) {
+                break
+            }
         }
         t.stop()
         onDone?.invoke(utteranceId, !stopped.get())
@@ -150,7 +183,7 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
     private var bookContext: Pair<String, String>? = null
     private var diskCache: com.earbook.app.playback.ChapterAudioCache? = null
 
-    fun setBookContext(bookId: String, voice: String = com.earbook.app.playback.PrerenderManager.DEFAULT_VOICE) {
+    fun setBookContext(bookId: String, voice: String = com.earbook.app.tts.VoicePrefs.cacheKey(appContext)) {
         diskCache = diskCache ?: com.earbook.app.playback.ChapterAudioCache(appContext)
         bookContext = bookId to voice
     }
@@ -174,13 +207,13 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
         }, "sherpa-prefetch").apply { priority = Process.THREAD_PRIORITY_BACKGROUND }.start()
     }
 
-    /** FloatArray → AudioTrack（LITTLE_ENDIAN float32） */
+    /** FloatArray → AudioTrack（帧单位返回） */
     private fun writeFloats(t: AudioTrack, chunk: FloatArray): Int {
         if (chunk.isEmpty()) return 0
-        val bb = java.nio.ByteBuffer.allocate(chunk.size * 4)
-            .order(java.nio.ByteOrder.LITTLE_ENDIAN)
-        for (s in chunk) bb.putFloat(s)
-        return t.write(bb.array(), 0, bb.array().size, AudioTrack.WRITE_BLOCKING)
+        // ENCODING_PCM_FLOAT 轨走原生 float[] write（返回帧数，无字节/帧换算歧义）
+        val ret = t.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+        if (ret < 0) android.util.Log.w(TAG, "AudioTrack.write err=$ret (${chunk.size}f)")
+        return if (ret > 0) ret else 0
     }
 
     /** 预取缓存（句级内存）：容量保护——最多 2 句 */
@@ -193,9 +226,9 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
     }
 
     private fun obtainTrack(sampleRate: Int): AudioTrack {
-        val existing = track
-        if (existing != null && trackSampleRate == sampleRate) return existing
-        existing?.release()
+        // 每句新轨（不跨句复用）：复用同一 AudioTrack 时 playbackHeadPosition 是终身累计值，
+        // 第 2 句起 drain 的「head vs written」比较即失效（真机实测连环假推进/0 帧交付）。
+        // TTS 每句新轨是标准做法；轨的创建成本（~ms 级）远低于句级合成。
         val t = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -211,10 +244,11 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
                     .build()
             )
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .setBufferSizeInBytes(sampleRate * 4) // 1 秒缓冲
+            // 2 秒缓冲：1 秒在慢速首写/系统抖动下仍会被 underrun 停轨（真机实测 0x009）
+            .setBufferSizeInBytes(sampleRate * 4 * 2)
             .build()
-        track = t
-        trackSampleRate = sampleRate
+        t.setVolume(volume)
+        currentTrack = t
         return t
     }
 
@@ -226,13 +260,13 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
             try { w.join(500) } catch (_: InterruptedException) {}
         }
         currentWorker = null
-        track?.pause()
+        currentTrack?.pause()
     }
 
     override fun shutdown() {
         stop()
-        track?.release()
-        track = null
+        currentTrack?.release()
+        currentTrack = null
         core?.release()
         core = null
     }
@@ -243,6 +277,6 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
     @Volatile private var volume = 1f
     override fun setVolume(volume: Float) {
         this.volume = volume
-        track?.setVolume(volume)
+        currentTrack?.setVolume(volume)
     }
 }

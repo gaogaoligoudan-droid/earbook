@@ -19,7 +19,7 @@ import com.earbook.app.tts.SherpaTtsEngine
  */
 object PrerenderManager {
 
-    const val DEFAULT_VOICE = "kokoro0"
+    const val DEFAULT_VOICE = "kokoro30" // 与 VoicePrefs.sid（试听拍板 7 号女声）对齐；男声切换时由调用方传 kokoro70
     private const val BATCH = 3 // 一次预渲染 3 章
 
     /** 渲染单章：逐句合成→拼接→WAV+句偏移落盘。幂等（已缓存跳过）。返回渲染的章数。 */
@@ -55,7 +55,9 @@ object PrerenderManager {
         if (cache.has(key)) return true
 
         if (!ModelManager.isReady(context)) return false
-        val engine = SherpaTtsEngine(context, ModelManager.modelDir(context))
+        // 音色随 voice 缓存键走（kokoro30/kokoro70）：渲染音色与缓存命名空间一致
+        val sid = voice.removePrefix("kokoro").toIntOrNull() ?: SherpaTtsEngine.KOKORO_DEFAULT_SPEAKER
+        val engine = SherpaTtsEngine(context, ModelManager.modelDir(context), sid)
         try {
             val sr = engine.sampleRate()
             val all = ArrayList<FloatArray>(sentences.size)

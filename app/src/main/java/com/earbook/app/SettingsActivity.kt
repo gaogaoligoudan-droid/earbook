@@ -24,7 +24,30 @@ class SettingsActivity : AppCompatActivity() {
         title = "设置"
 
         setupCacheSection()
+        setupVoiceSection()
         setupApiKeySection()
+    }
+
+    // ── 音色（试听拍板：7 号女声 zf sid=30 / 10 号男声 zm sid=70） ──
+
+    private fun setupVoiceSection() {
+        val prefs = getSharedPreferences("earbook", MODE_PRIVATE)
+        fun refresh() {
+            val male = prefs.getString("voice", "female") == "male"
+            binding.tvVoiceHint.text =
+                if (male) "当前：男声（10 号）｜切换后下一句生效" else "当前：女声（7 号）｜切换后下一句生效"
+            binding.btnVoiceFemale.isEnabled = !male
+            binding.btnVoiceMale.isEnabled = male
+        }
+        binding.btnVoiceFemale.setOnClickListener {
+            prefs.edit().putString("voice", "female").apply(); refresh()
+            Toast.makeText(this, "已切女声", Toast.LENGTH_SHORT).show()
+        }
+        binding.btnVoiceMale.setOnClickListener {
+            prefs.edit().putString("voice", "male").apply(); refresh()
+            Toast.makeText(this, "已切男声", Toast.LENGTH_SHORT).show()
+        }
+        refresh()
     }
 
     // ── 缓存管理 ──────────────────────────────────────────
