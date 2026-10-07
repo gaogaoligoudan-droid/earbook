@@ -37,7 +37,7 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
     fun ensureModelLoadedAsync() {
         Thread({
             try {
-                ModelManager.downloadIfNeeded(appContext) { }
+                ModelManager.installIfNeeded(appContext) { }
                 synchronized(this) {
                     if (core == null) {
                         core = SherpaTtsEngine(

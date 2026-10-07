@@ -11,7 +11,7 @@ import org.junit.runner.RunWith
 
 /**
  * sherpa 引擎端到端（CI 模拟器 x86_64）：
- * 模型下载→解包→引擎初始化→中文合成→RTF 基准（方案 A 级假设验证）。
+ * 内置模型解包→引擎初始化→中文合成→RTF 基准（方案 A 级假设验证，全程零网络）。
  *
  * RTF = 合成耗时 / 音频时长：<1.0 即实时可用（模拟器 CPU 与手机不可直接换算，
  * 但「跑通+量级」是硬证据；手机端基准待真机验收 F4/F5 补充）。
@@ -24,17 +24,17 @@ class SherpaE2eTest {
     }
 
     @Test
-    fun modelDownload_unpackage_synthesize() {
+    fun modelInstall_synthesize() {
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
 
-        // 1. 模型获取（CI 网络：下载+解包；幂等）
+        // 1. 模型解包（内置 assets，幂等）
         val t0 = System.currentTimeMillis()
-        val dir = ModelManager.downloadIfNeeded(ctx)
-        val downloadMs = System.currentTimeMillis() - t0
+        val dir = ModelManager.installIfNeeded(ctx)
+        val installMs = System.currentTimeMillis() - t0
         assertTrue("模型就绪标记未落", ModelManager.isReady(ctx))
         assertTrue("模型文件缺失", dir.resolve("model.int8.onnx").exists())
         assertTrue("词典缺失", dir.resolve("dict").isDirectory)
-        Log.i(TAG, "模型下载+解包耗时 ${downloadMs / 1000}s")
+        Log.i(TAG, "模型解包耗时 ${installMs / 1000}s")
 
         // 2. 引擎初始化 + 中文合成（含引擎内 TN：数字转读）
         val engine = SherpaTtsEngine(ctx, dir)

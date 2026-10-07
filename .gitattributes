@@ -1,0 +1,1 @@
+app/src/main/assets/model.tar.bz2 filter=lfs diff=lfs merge=lfs -text

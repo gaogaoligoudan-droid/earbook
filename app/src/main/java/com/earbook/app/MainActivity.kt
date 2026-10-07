@@ -52,7 +52,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // M2：离线语音模型入口（就绪后隐藏）+ 设置入口
-        binding.btnVoiceModel.setOnClickListener { downloadVoiceModel() }
+        binding.btnVoiceModel.setOnClickListener { installVoiceModel() }
         binding.btnSettings.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
@@ -70,7 +70,7 @@ class MainActivity : AppCompatActivity() {
 
     private var voiceModelDialog: AlertDialog? = null
 
-    private fun downloadVoiceModel() {
+    private fun installVoiceModel() {
         if (voiceModelDialog != null) return // 防重复点击
         val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(R.string.voice_model_download)
@@ -81,7 +81,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val ok = withContext(Dispatchers.IO) {
                 try {
-                    com.earbook.app.tts.ModelManager.downloadIfNeeded(this@MainActivity) { p ->
+                    com.earbook.app.tts.ModelManager.installIfNeeded(this@MainActivity) { p ->
                         runOnUiThread {
                             dialog.setMessage(
                                 getString(R.string.voice_model_downloading, (p * 100).toInt())

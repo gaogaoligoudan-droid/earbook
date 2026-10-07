@@ -2,8 +2,8 @@
     <string name="app_name">EarBook 听书</string>
     <string name="import_book">导入 TXT 小说</string>
     <string name="empty_hint">书架空空如也\n点右下角 + 导入一本 TXT 开始听</string>
-    <string name="voice_model_download">下载离线语音（约147MB）</string>
-    <string name="voice_model_downloading">正在下载离线语音… %1$d%%</string>
+    <string name="voice_model_download">初始化离线语音（模型已内置，首次约半分钟）</string>
+    <string name="voice_model_downloading">正在初始化离线语音… %1$d%%</string>
     <string name="voice_model_ready">离线语音已就绪，播放不再依赖网络</string>
-    <string name="voice_model_failed">下载失败，请检查网络后重试</string>
+    <string name="voice_model_failed">初始化失败，请退出应用后重试</string>
 </resources>

@@ -6,16 +6,23 @@ import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
- * 模型管理：首启下载 + 就绪检查 + 完整性标记。
- * 下载源 GitHub release（tts-models）；tar.bz2 解包走 commons-compress。
+ * 模型管理：内置 assets 解包 + 就绪检查 + 完整性标记。
+ *
+ * 模型包随 APK 内置（assets/model.tar.bz2，git-lfs 存储），首启解包到 filesDir，
+ * 之后引擎从 filesDir 加载——全程零网络（替代旧版 GitHub release 下载，国内必败）。
+ * 解包/flatten/完整性校验/标记链路与旧版完全一致（真机已验证）。
  */
 object ModelManager {
 
     private const val MARKER = ".ok"
+    private const val ASSET_BUNDLE = "model.tar.bz2"
+
+    /** 进度分两段：assets 拷贝 0..0.4，解包 0.4..1.0（按字节数线性映射） */
+    private const val COPY_WEIGHT = 0.4f
+    private const val ASSET_BYTES = 147_031_220L
+    private const val UNPACKED_BYTES = 207_000_000L
 
     fun modelDir(context: Context): File =
         File(context.filesDir, SherpaTtsEngine.MODEL_DIR_NAME)
@@ -24,15 +31,15 @@ object ModelManager {
         File(modelDir(context), MARKER).exists()
 
     /**
-     * 同步下载并解包（调用方须在后台线程；进度回调 0..1）。幂等。
+     * 从内置 assets 解包模型（调用方须在后台线程；进度回调 0..1）。幂等。
      */
-    fun downloadIfNeeded(context: Context, onProgress: (Float) -> Unit = {}): File {
+    fun installIfNeeded(context: Context, onProgress: (Float) -> Unit = {}): File {
         val dir = modelDir(context)
         if (isReady(context)) return dir
         dir.mkdirs()
-        val bz2 = File(dir, "model.tar.bz2")
-        download(SherpaTtsEngine.MODEL_URL, bz2, onProgress)
-        untarBz2(bz2, dir)
+        val bz2 = File(context.cacheDir, ASSET_BUNDLE)
+        copyAsset(context, ASSET_BUNDLE, bz2, onProgress)
+        untarBz2(bz2, dir) { done -> onProgress(COPY_WEIGHT + (1 - COPY_WEIGHT) * done) }
         flatten(dir)
         bz2.delete()
         // 完整性标记：核心文件存在才置
@@ -43,13 +50,8 @@ object ModelManager {
         return dir
     }
 
-    private fun download(url: String, dest: File, onProgress: (Float) -> Unit) {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        conn.connectTimeout = 15000
-        conn.readTimeout = 60000
-        conn.instanceFollowRedirects = true
-        val total = conn.contentLengthLong
-        FileInputStreamSafe(conn.inputStream).use { input ->
+    private fun copyAsset(context: Context, name: String, dest: File, onProgress: (Float) -> Unit) {
+        context.assets.open(name).use { input ->
             FileOutputStream(dest).use { out ->
                 val buf = ByteArray(64 * 1024)
                 var done = 0L
@@ -58,19 +60,22 @@ object ModelManager {
                     if (n < 0) break
                     out.write(buf, 0, n)
                     done += n
-                    if (total > 0) onProgress(done.toFloat() / total)
+                    onProgress(COPY_WEIGHT * (done.toFloat() / ASSET_BYTES))
                 }
             }
         }
     }
 
-    private fun FileInputStreamSafe(s: java.io.InputStream) = s
-
-    private fun untarBz2(bz2: File, dir: File) {
+    private fun untarBz2(
+        bz2: File,
+        dir: File,
+        onProgress: (Float) -> Unit = {},
+    ) {
         TarArchiveInputStream(BZip2CompressorInputStream(FileInputStream(bz2))).use { tar ->
-            var entry = tar.nextTarEntry
+            var extracted = 0L
             val buf = ByteArray(64 * 1024)
-            while (entry != null) {
+            while (true) {
+                val entry = tar.nextTarEntry ?: break
                 if (entry.isDirectory) {
                     File(dir, entry.name).mkdirs()
                 } else {
@@ -83,8 +88,9 @@ object ModelManager {
                             out.write(buf, 0, n)
                         }
                     }
+                    extracted += entry.size
+                    onProgress((extracted.toFloat() / UNPACKED_BYTES).coerceAtMost(1f))
                 }
-                entry = tar.nextTarEntry
             }
         }
     }
