@@ -40,8 +40,16 @@ class M4aExportTest {
             val ok = AacCodec.exportToM4a(files, out, { done, total -> progress.add(done * 100 / total) })
             assertTrue("导出应成功", ok)
             assertTrue("输出应存在且非空", out.exists() && out.length() > 1000)
-            // MP4 容器合法性：ftyp box 在文件头
-            val head = out.inputStream().use { it.readNBytes(12) }
+            // MP4 容器合法性：ftyp box 在文件头（readNBytes 需 API 33，模拟器 31 用经典读法）
+            val head = ByteArray(12)
+            out.inputStream().use { ins ->
+                var off = 0
+                while (off < 12) {
+                    val n = ins.read(head, off, 12 - off)
+                    if (n < 0) break
+                    off += n
+                }
+            }
             assertEquals("ftyp", String(head.copyOfRange(4, 8), Charsets.US_ASCII))
             // 每章 1 秒 @24kHz = 24000 帧 → 3 章 ≈ 72000 帧（AAC 帧 1024 样本，±10%）
             val expectBytes = files.sumOf { it.length() }
