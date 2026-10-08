@@ -53,6 +53,11 @@
             android:exported="false"
             android:label="存储管理" />
 
+        <activity
+            android:name=".ReaderActivity"
+            android:exported="false"
+            android:label="阅读" />
+
         <service
             android:name=".service.ReadAloudService"
             android:exported="false"

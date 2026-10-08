@@ -71,6 +71,10 @@ class ReadAloudService : Service() {
         const val ACTION_ESTIMATE_DECLINE = "com.earbook.app.action.ESTIMATE_DECLINE"
         // M4 R5 变速循环
         const val ACTION_CYCLE_SPEED = "com.earbook.app.action.CYCLE_SPEED"
+        // M4/R12 原文面板：跳句
+        const val ACTION_SEEK = "com.earbook.app.action.SEEK"
+        const val EXTRA_CHAPTER = "chapter"
+        const val EXTRA_SENTENCE = "sentence"
         private val SPEED_CYCLE = floatArrayOf(0.8f, 1.0f, 1.25f, 1.5f, 2.0f)
         const val EXTRA_BOOK_ID = "bookId"
 
@@ -115,9 +119,22 @@ class ReadAloudService : Service() {
                 Intent(context, ReadAloudService::class.java).setAction(action)
             )
         }
+
+        /** R12：跳句（当前书指定章/句；未播放的书从该句起播由 loadAndPlay 处理） */
+        fun send(context: Context, action: String, bookId: String, chapter: Int, sentence: Int) {
+            context.startService(
+                Intent(context, ReadAloudService::class.java)
+                    .setAction(action)
+                    .putExtra(EXTRA_BOOK_ID, bookId)
+                    .putExtra(EXTRA_CHAPTER, chapter)
+                    .putExtra(EXTRA_SENTENCE, sentence)
+            )
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    @Volatile private var pendingStart: Pair<Int, Int>? = null // R12 跳句起始位（loadAndPlay 消费）
     private lateinit var store: PlaybackStore
     private lateinit var audioManager: AudioManager
     private lateinit var mediaSession: MediaSessionCompat
@@ -236,7 +253,8 @@ class ReadAloudService : Service() {
         // M2：RenderService 渲染事件（同进程直连）→ 服务侧分流（WAIT 续播/回切提示/门槛唤醒）
         RenderEvents.serviceListener = object : RenderEvents.Listener {
             override fun onRenderEvent(e: RenderEvents.Event) {
-                scope.launch { onRenderEvent(e) }
+                // 主线程直 post（ANR 实测：每事件一层协程在主线程 churn 过重）
+                mainHandler.post { onRenderEvent(e) }
             }
         }
         createChannel()
@@ -279,6 +297,27 @@ class ReadAloudService : Service() {
             }
             // M4 R5 变速循环：写偏好 + 即时应用到当前播放轨/引擎
             ACTION_CYCLE_SPEED -> cycleSpeed()
+            // R12 原文面板：点选句子跳转（当前书当前章直跳；跨书/跨章经 loadAndPlay 带起始位）
+            ACTION_SEEK -> {
+                val bid = intent.getStringExtra(EXTRA_BOOK_ID)
+                val c = intent.getIntExtra(EXTRA_CHAPTER, -1)
+                val sn = intent.getIntExtra(EXTRA_SENTENCE, -1)
+                if (bid != null && c >= 0 && sn >= 0) {
+                    if (book != null && book?.id == bid && c == chapterIndex) {
+                        val ch = chapters.getOrNull(c)
+                        if (ch != null && sn < ch.sentenceCount) {
+                            if (chapterMode) { chapterMode = false; chapterPlayer.stop() }
+                            runCatching { engine.stop() }
+                            sentenceIndex = sn
+                            isSpeaking = false
+                            playCurrent()
+                        }
+                    } else {
+                        pendingStart = c to sn
+                        loadAndPlay(bid)
+                    }
+                }
+            }
         }
         return START_NOT_STICKY
     }
@@ -345,6 +384,14 @@ class ReadAloudService : Service() {
                 val saved = store.getProgress(bookId)
                 chapterIndex = saved.chapterIndex.coerceIn(0, (chapters.size - 1).coerceAtLeast(0))
                 sentenceIndex = saved.sentenceIndex.coerceIn(0, (chapters[chapterIndex].sentenceCount - 1).coerceAtLeast(0))
+                // R12：原文面板跳句的起始位覆盖存档进度
+                pendingStart?.let { (c, sn) ->
+                    pendingStart = null
+                    if (c in chapters.indices) {
+                        chapterIndex = c
+                        sentenceIndex = sn.coerceIn(0, (chapters[c].sentenceCount - 1).coerceAtLeast(0))
+                    }
+                }
                 consecutiveFailures = 0
                 // M3：预估元数据统计写回（旧书首次播放补齐；徽标/预估的分母）
                 if (target.totalChapters == 0) {
@@ -844,7 +891,14 @@ class ReadAloudService : Service() {
                 .setState(state, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
                 .build()
         )
+        // R12：句级位置/播放态广播（原文面板高亮+跟随）
+        book?.id?.let { bid ->
+            com.earbook.app.playback.PlaybackEvents.emit(
+                com.earbook.app.playback.PlaybackEvents.Event.Position(bid, chapterIndex, sentenceIndex, isSpeaking)
+            )
+        }
     }
+
 
     // ── 通知 ─────────────────────────────────────────────────
 
@@ -885,7 +939,8 @@ class ReadAloudService : Service() {
             .addAction(android.R.drawable.ic_media_next, "下一章", serviceAction(ACTION_NEXT))
             .setContentIntent(
                 PendingIntent.getActivity(
-                    this, 0, Intent(this, MainActivity::class.java),
+                    this, 0,
+                    Intent(this, if (book != null) com.earbook.app.ReaderActivity::class.java else MainActivity::class.java),
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
             )

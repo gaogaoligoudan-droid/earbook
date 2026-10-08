@@ -20,6 +20,7 @@ import com.earbook.app.databinding.ActivityMainBinding
 import com.earbook.app.service.ReadAloudService
 import com.earbook.app.store.PlaybackStore
 import com.earbook.app.ui.BookAdapter
+import com.earbook.app.ui.BookRow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -176,31 +177,39 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshList() {
         val books = store.listBooks()
-        val registry = com.earbook.app.book.AssetRegistry(this)
-        adapter = BookAdapter(
-            books = books,
-            progressText = { book ->
-                val p = store.getProgress(book.id)
-                "进度：第 ${p.chapterIndex + 1} 章 · 第 ${p.sentenceIndex + 1} 句"
-            },
-            badgeText = { book ->
-                // R8c：⚡已缓存 N/M · ✨优化 N（M=章数未知时只显示 N）；⚠优化失败 K
-                val s = registry.bookSummary(book.id)
-                if (s.cachedChapters == 0 && s.optimizedChapters == 0 && s.failedChapters == 0) null
-                else buildString {
-                    append("⚡ 已缓存 ${s.cachedChapters}")
-                    if (book.totalChapters > 0) append("/${book.totalChapters}")
-                    if (s.optimizedChapters > 0) append(" · ✨ AI 优化 ${s.optimizedChapters}")
-                    if (s.failedChapters > 0) append(" · ⚠ ${s.failedChapters} 章优化失败")
-                }
-            },
-            onClick = { book -> startPlayback(book.id) },
-            onLongClick = { book -> BookManageActivity.start(this@MainActivity, book.id) }
-        )
-        binding.recyclerBooks.layoutManager = LinearLayoutManager(this)
-        binding.recyclerBooks.adapter = adapter
         binding.emptyHint.visibility = if (books.isEmpty()) android.view.View.VISIBLE
         else android.view.View.GONE
+        // 卡死修复（ANR 实测）：书卡 bind 的磁盘读（进度/徽标 JSON）全部下放 IO 线程预取，
+        // 主线程 bind 只用现成文本——此前每次 bind 两次磁盘读，滚动/刷新即主线程 I/O 风暴
+        lifecycleScope.launch {
+            val registry = com.earbook.app.book.AssetRegistry(this@MainActivity)
+            val rows = withContext(Dispatchers.IO) {
+                books.map { b ->
+                    val p = store.getProgress(b.id)
+                    val progress = "进度：第 ${p.chapterIndex + 1} 章 · 第 ${p.sentenceIndex + 1} 句"
+                    val sum = registry.bookSummary(b.id)
+                    val badge = if (sum.cachedChapters == 0 && sum.optimizedChapters == 0 && sum.failedChapters == 0) null
+                    else buildString {
+                        append("⚡ 已缓存 ${sum.cachedChapters}")
+                        if (b.totalChapters > 0) append("/${b.totalChapters}")
+                        if (sum.optimizedChapters > 0) append(" · ✨ AI 优化 ${sum.optimizedChapters}")
+                        if (sum.failedChapters > 0) append(" · ⚠ ${sum.failedChapters} 章优化失败")
+                    }
+                    Triple(b, progress, badge)
+                }
+            }
+            adapter = BookAdapter(
+                rows = rows.map { (b, progress, badge) -> BookRow(b, progress, badge) },
+                onClick = { book ->
+                    // R12：当前播放中的书 → 进原文阅读面板
+                    if (ReadAloudService.currentBookId == book.id) ReaderActivity.start(this@MainActivity, book.id)
+                    else startPlayback(book.id)
+                },
+                onLongClick = { book -> BookManageActivity.start(this@MainActivity, book.id) }
+            )
+            binding.recyclerBooks.layoutManager = LinearLayoutManager(this@MainActivity)
+            binding.recyclerBooks.adapter = adapter
+        }
     }
 
     /** R8b：首触后台缓存先问授权（记住选择），随后交给服务；R11 预估前置检查 */
