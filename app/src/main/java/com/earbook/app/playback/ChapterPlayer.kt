@@ -30,6 +30,7 @@ class ChapterPlayer(private val cache: ChapterAudioCache) {
     private var worker: Thread? = null
     private val stopped = AtomicBoolean(true)
     @Volatile private var volume = 1f
+    @Volatile private var speed = 1f // R5 播放速度
 
     val isPlaying: Boolean
         get() = track?.playState == AudioTrack.PLAYSTATE_PLAYING
@@ -39,7 +40,10 @@ class ChapterPlayer(private val cache: ChapterAudioCache) {
         val entry = cache.getEntry(key) ?: run { cb.onError("章缓存缺失"); return }
         if (entry.sentenceOffsets.isEmpty()) { cb.onError("句偏移表缺失"); return }
         stopped.set(false)
-        val t = buildTrack(entry.sampleRate).also { it.setVolume(volume) }
+        val t = buildTrack(entry.sampleRate).also {
+            it.setVolume(volume)
+            applySpeed(it) // R5：新轨沿用当前速度
+        }
         track = t
         worker = Thread({
             try {
@@ -77,6 +81,18 @@ class ChapterPlayer(private val cache: ChapterAudioCache) {
     fun setVolume(v: Float) {
         volume = v
         runCatching { track?.setVolume(v) }
+    }
+
+    /** R5 变速（0.8~2.0x）：PlaybackParams 时域拉伸保音高，即时生效（当前句起）。
+     *  播放头按音频帧推进，变速下 head 前进更快但刻度不变——句边界/断点对位不受影响。 */
+    fun setSpeed(speed: Float) {
+        this.speed = speed.coerceIn(0.8f, 2f)
+        track?.let { applySpeed(it) }
+    }
+
+    private fun applySpeed(t: AudioTrack) {
+        if (speed == 1f) return
+        runCatching { t.playbackParams = t.playbackParams.setSpeed(speed) }
     }
 
     // ── 内部：流式泵 ─────────────────────────────────────

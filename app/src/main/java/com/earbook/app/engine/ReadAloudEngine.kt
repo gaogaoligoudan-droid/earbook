@@ -36,4 +36,10 @@ interface ReadAloudEngine {
 
     /** 设置朗读音量（0f~1f，句子粒度生效）。用于音频焦点 Duck */
     fun setVolume(volume: Float)
+
+    /**
+     * 播放速度（M4/R5：0.8~2.0x，音频域变速保音高，不重合成）。
+     * 默认空实现（速度可选，引擎各自落地：Sherpa=PlaybackParams；系统=setSpeechRate）。
+     */
+    fun setSpeed(speed: Float) {}
 }

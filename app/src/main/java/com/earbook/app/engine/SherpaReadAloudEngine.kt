@@ -248,8 +248,22 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
             .setBufferSizeInBytes(sampleRate * 4 * 2)
             .build()
         t.setVolume(volume)
+        if (speed != 1f) applySpeed(t, speed)
         currentTrack = t
         return t
+    }
+
+    /** R5 变速：时域拉伸保音高（系统 PlaybackParams），即时生效；head 按音频帧走，
+     *  句边界/断点对位不受影响。新轨创建时同样应用。 */
+    override fun setSpeed(speed: Float) {
+        this.speed = speed
+        currentTrack?.let { applySpeed(it, speed) }
+    }
+
+    private fun applySpeed(track: AudioTrack, speed: Float) {
+        runCatching {
+            track.playbackParams = track.playbackParams.setSpeed(speed.coerceIn(0.8f, 2f))
+        }
     }
 
     override fun stop() {
@@ -275,6 +289,7 @@ class SherpaReadAloudEngine(context: Context) : ReadAloudEngine {
     override fun setOnInitListener(listener: ((Boolean) -> Unit)?) { onInit = listener }
 
     @Volatile private var volume = 1f
+    @Volatile private var speed = 1f // R5 播放速度（新轨创建时沿用）
     override fun setVolume(volume: Float) {
         this.volume = volume
         currentTrack?.setVolume(volume)

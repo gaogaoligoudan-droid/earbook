@@ -29,6 +29,7 @@ class SystemReadAloudEngine(context: Context) : ReadAloudEngine {
     private var pendingId: String? = null
     private var initRetryLeft = MAX_INIT_RETRY
     private var volume = 1.0f
+    private var speed = 1.0f // R5 播放速度
 
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -66,6 +67,8 @@ class SystemReadAloudEngine(context: Context) : ReadAloudEngine {
             // 中文环境优先，缺失时退回默认语言
             val result = tts?.setLanguage(Locale.SIMPLIFIED_CHINESE)
             Log.i(TAG, "setLanguage(zh-CN) result=$result")
+            // R5 变速（初始化完成前设置的速度在此补应用）
+            if (speed != 1f) tts?.setSpeechRate(speed)
             synchronized(this) {
                 isReady = true
                 val text = pendingText
@@ -99,6 +102,12 @@ class SystemReadAloudEngine(context: Context) : ReadAloudEngine {
 
     override fun setVolume(volume: Float) {
         this.volume = volume.coerceIn(0f, 1f)
+    }
+
+    /** R5 变速：系统 TTS 语义速率（主流引擎保音高） */
+    override fun setSpeed(speed: Float) {
+        this.speed = speed.coerceIn(0.8f, 2f)
+        tts?.setSpeechRate(this.speed)
     }
 
     override fun speak(text: String, utteranceId: String) {

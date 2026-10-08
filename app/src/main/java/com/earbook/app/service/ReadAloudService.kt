@@ -69,7 +69,21 @@ class ReadAloudService : Service() {
         // M3 R11 存储预估确认
         const val ACTION_ESTIMATE_ACCEPT = "com.earbook.app.action.ESTIMATE_ACCEPT"
         const val ACTION_ESTIMATE_DECLINE = "com.earbook.app.action.ESTIMATE_DECLINE"
+        // M4 R5 变速循环
+        const val ACTION_CYCLE_SPEED = "com.earbook.app.action.CYCLE_SPEED"
+        private val SPEED_CYCLE = floatArrayOf(0.8f, 1.0f, 1.25f, 1.5f, 2.0f)
         const val EXTRA_BOOK_ID = "bookId"
+
+        /** M4 R5 速度循环（通知/设置页共用）：0.8→1.0→1.25→1.5→2.0→0.8，返回新速度 */
+        fun cycleSpeedPref(context: Context): Float {
+            val prefs = context.getSharedPreferences("earbook", Context.MODE_PRIVATE)
+            val cur = prefs.getFloat("play_speed", 1f).coerceIn(0.8f, 2f)
+            var idx = 0
+            for (i in SPEED_CYCLE.indices) if (SPEED_CYCLE[i] == cur) idx = i
+            val next = SPEED_CYCLE[(idx + 1) % SPEED_CYCLE.size]
+            prefs.edit().putFloat("play_speed", next).apply()
+            return next
+        }
 
         /** 追上弹窗待处理标记（MainActivity 前台时读走并弹 dialog） */
         @Volatile var pendingCacheChoice = false
@@ -186,6 +200,7 @@ class ReadAloudService : Service() {
         engine.setOnDoneListener { utteranceId, success ->
             scope.launch { onSentenceDone(utteranceId, success) }
         }
+        engine.setSpeed(speedPref()) // R5：引擎创建即应用当前速度
         engine.setOnInitListener { success ->
             scope.launch {
                 if (!success) {
@@ -262,6 +277,8 @@ class ReadAloudService : Service() {
                 Toast.makeText(this, "已取消缓存", Toast.LENGTH_SHORT).show()
                 stopSelf()
             }
+            // M4 R5 变速循环：写偏好 + 即时应用到当前播放轨/引擎
+            ACTION_CYCLE_SPEED -> cycleSpeed()
         }
         return START_NOT_STICKY
     }
@@ -486,6 +503,7 @@ class ReadAloudService : Service() {
         })
         chapterMode = true
         isSpeaking = true
+        chapterPlayer.setSpeed(speedPref()) // R5：新轨应用当前速度
         updateState()
         updateNotification()
         return true
@@ -576,6 +594,7 @@ class ReadAloudService : Service() {
                 }
             }
         }
+        engine.setSpeed(speedPref())
         if (notify) Toast.makeText(this, "已切系统语音，缓存跟上后自动切回", Toast.LENGTH_LONG).show()
     }
 
@@ -598,6 +617,7 @@ class ReadAloudService : Service() {
             }
             book?.id?.let { se.setBookContext(it, bookVoiceKey()) }
         })
+        engine.setSpeed(speedPref())
         if (notify) Toast.makeText(this, "缓存已跟上，切回神经语音", Toast.LENGTH_SHORT).show()
     }
 
@@ -648,6 +668,29 @@ class ReadAloudService : Service() {
             }
         }
     }
+
+    // ── M4 R5 变速 ────────────────────────────────────────
+
+    private fun speedPref(): Float =
+        getSharedPreferences("earbook", MODE_PRIVATE).getFloat("play_speed", 1f)
+            .coerceIn(0.8f, 2f)
+
+    private fun applySpeed(speed: Float) {
+        chapterPlayer.setSpeed(speed)
+        engine.setSpeed(speed)
+    }
+
+    private fun cycleSpeed() {
+        val next = cycleSpeedPref(this)
+        applySpeed(next)
+        updateNotification()
+        Toast.makeText(this, "播放速度 ${fmtSpeed(next)}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun fmtSpeed(s: Float): String =
+        if (s == s.toInt().toFloat()) "${s.toInt()}x" else "${s}x"
+
+    private fun speedLabel(): String = "速度 ${fmtSpeed(speedPref())}"
 
     private fun pause(autoResumeAfterFocus: Boolean = false) {
         if (!isSpeaking) return
@@ -832,6 +875,7 @@ class ReadAloudService : Service() {
             .setOngoing(isSpeaking)
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .addAction(0, speedLabel(), serviceAction(ACTION_CYCLE_SPEED))
             .addAction(android.R.drawable.ic_media_previous, "上一章", serviceAction(ACTION_PREVIOUS))
             .addAction(
                 if (isSpeaking) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
@@ -848,7 +892,7 @@ class ReadAloudService : Service() {
             .setStyle(
                 androidx.media.app.NotificationCompat.MediaStyle()
                     .setMediaSession(mediaSession.sessionToken)
-                    .setShowActionsInCompactView(0, 1, 2)
+                    .setShowActionsInCompactView(1, 2, 3)
             )
             .build()
     }

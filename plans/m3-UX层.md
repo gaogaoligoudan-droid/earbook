@@ -3,6 +3,23 @@
 > 2026-10-08 晨立项 · 依据：REQUIREMENTS.md R1/R6/R8c/R8d/R11
 > 纪律：每步可编译可提交；严格按需求文档，不走私（M4 变速/导出不进 M3）
 
+## 实施状态（2026-10-08 上午，25f9ad6 已推送）
+
+- [x] M3-a 数据层：Book voice/mode/totalChars/totalChapters（播放时统计写回+旧数据兼容）
+      + clearBook/clearBookVoice + 删书随清资产（R11 验收）
+- [x] M3-b Service：bookVoiceKey()/useNeural()/startGateRender + 书级模式引擎切换
+      （静默）+ 预估兜底双通道（pendingStorageEstimate）+ RenderService 书级音色
+- [x] M3-c WizardActivity 四步向导（试听=引擎现场合成，模型未就绪禁用）
+- [x] M3-d BookManageActivity（明细+音色/模式切换+删除缓存/优化+重新生成+移除）
+- [x] M3-e StorageActivity（每书+总占用+1GB 黄条提醒+逐书清理）+ 设置页入口
+- [x] M3-f 书架徽标（无登记不显示）+ 长按入口改造（删除确认移入管理页）
+- [x] **额外修复：RenderService 漏注册 manifest（M2 遗漏）**——specialUse 类型
+      （避 dataSync 6h/天配额，长书全书渲染）+ FOREGROUND_SERVICE_SPECIAL_USE 权限
+- [x] 预估交互重设计：Activity 侧前置检查（点书时元数据在手直接弹 dialog，
+      避免 Service 设置 pending 后用户已在前台、dialog 只能等下次 onResume 的缺陷）
+- [ ] CI 绿确认（37710152695 跑中）
+- [ ] 真机走查：向导→导书→点书（预估/门槛）→管理页切音色→存储页（用户或下会话）
+
 ## M3 范围
 
 1. **首次单一向导**（R6+R8b+R1，鼓励式）：欢迎 → 新书默认模式 → 音色试听 → 后台授权+存储说明

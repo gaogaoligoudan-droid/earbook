@@ -28,10 +28,33 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="已缓存章节零合成耗电；超过上限自动清理最久未听的（正在听的不清）"
+            android:text="缓存不设上限、不自动清理（R11）；每书占用见存储管理"
             android:textSize="12sp"
             android:textColor="?android:attr/textColorSecondary" />
 
+        <!-- ── M4 R5 播放速度 ── -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="播放速度" />
+
+        <TextView
+            android:id="@+id/tv_speed_hint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:textColor="?android:attr/textColorSecondary" />
+
+        <Button
+            android:id="@+id/btn_speed"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:text="切换速度" />
+
+        <!-- ── 缓存管理 ── -->
         <Button
             android:id="@+id/btn_storage"
             style="@style/Widget.MaterialComponents.Button.TextButton"

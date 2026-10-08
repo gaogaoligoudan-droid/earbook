@@ -5,6 +5,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.earbook.app.databinding.ActivitySettingsBinding
 import com.earbook.app.playback.ChapterAudioCache
+import com.earbook.app.service.ReadAloudService
 
 /**
  * 设置页（M2-5 缓存管理 UI）：
@@ -48,6 +49,27 @@ class SettingsActivity : AppCompatActivity() {
             Toast.makeText(this, "新书默认音色：男声", Toast.LENGTH_SHORT).show()
         }
         refresh()
+    }
+
+    // ── M4 R5 播放速度 ─────────────────────────────────────
+
+    private fun setupSpeedSection() {
+        refreshSpeed()
+        binding.btnSpeed.setOnClickListener {
+            // 正在播放 → 发给 Service 即时应用；未播放 → 本地循环写偏好
+            if (ReadAloudService.currentBookId != null) {
+                ReadAloudService.send(this, ReadAloudService.ACTION_CYCLE_SPEED)
+            } else {
+                ReadAloudService.cycleSpeedPref(this)
+            }
+            refreshSpeed()
+        }
+    }
+
+    private fun refreshSpeed() {
+        val speed = getSharedPreferences("earbook", MODE_PRIVATE).getFloat("play_speed", 1f)
+        val label = if (speed == speed.toInt().toFloat()) "${speed.toInt()}x" else "${speed}x"
+        binding.tvSpeedHint.text = "当前：$label（0.8~2.0x 保音高，不重新合成；播放中切换即时生效）"
     }
 
     // ── 缓存管理（M1：无上限无 LRU，R11 拍板；滑块已移除） ──
