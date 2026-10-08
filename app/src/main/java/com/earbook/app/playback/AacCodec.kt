@@ -1,6 +1,7 @@
 package com.earbook.app.playback
 
 import android.media.MediaCodec
+import android.media.MediaMuxer
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Log
@@ -350,5 +351,90 @@ object AacCodec {
             p++
         }
         return null
+    }
+
+    /** ADTS srIdx → 采样率（adtsHeader 逆表） */
+    private fun adtsSampleRate(idx: Int): Int = when (idx) {
+        0 -> 96000; 1 -> 88200; 2 -> 64000; 3 -> 48000; 4 -> 44100
+        5 -> 32000; 6 -> 24000; 7 -> 22050; 8 -> 16000; 9 -> 12000
+        10 -> 11025; 11 -> 8000
+        else -> -1
+    }
+
+    // ── R10 导出：AAC(ADTS) 零转码封装 M4A ────────────────────
+
+    /**
+     * 把一章一章的 .aac(ADTS) 缓存按顺序封装成单个 M4A（MP4 容器），零转码零损失。
+     * - 剥 ADTS 头喂裸帧（与解码路径同款），csd-0 从首帧推导（复用 aacCsd0FromAdts）
+     * - pts 按全局帧序精确计算 frames×1024×1e6/sampleRate（不累加，防整数漂移）
+     * - 只读缓存文件不破坏本体（R10 验收）；失败/取消清理半成品
+     * @param onProgress (已封装章数, 总章数)
+     */
+    fun exportToM4a(
+        aacFiles: List<java.io.File>,
+        outFile: java.io.File,
+        onProgress: (Int, Int) -> Unit,
+        isCancelled: () -> Boolean = { false },
+    ): Boolean {
+        if (aacFiles.isEmpty()) return false
+        var muxer: MediaMuxer? = null
+        try {
+            val buf = java.nio.ByteBuffer.allocateDirect(64 * 1024)
+            val info = MediaCodec.BufferInfo()
+            var trackIdx = -1
+            var sampleRate = 0
+            var framesWritten = 0L
+            outFile.parentFile?.mkdirs()
+            muxer = MediaMuxer(outFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            for ((done, f) in aacFiles.withIndex()) {
+                if (isCancelled()) throw IllegalStateException("已取消")
+                val data = f.readBytes()
+                val first = nextAdtsFrame(data, 0)
+                    ?: throw IllegalStateException("非 ADTS 流: ${f.name}")
+                val hdrLen = adtsHeaderLen(data[first.first + 1].toInt())
+                val srIdx = (data[first.first + 2].toInt() and 0x3C) shr 2
+                if (trackIdx < 0) {
+                    // 首文件首帧定 csd-0 / 采样率
+                    val csd = aacCsd0FromAdts(data.copyOfRange(first.first, first.first + first.second))
+                        ?: throw IllegalStateException("csd-0 推导失败: ${f.name}")
+                    sampleRate = adtsSampleRate(srIdx)
+                    if (sampleRate <= 0) throw IllegalStateException("未知采样率索引 $srIdx")
+                    val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
+                        setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                        setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(csd))
+                    }
+                    trackIdx = muxer.addTrack(fmt)
+                    muxer.start()
+                } else if (adtsSampleRate(srIdx) != sampleRate) {
+                    // 同书同引擎渲染，防御性校验（降级 WAV 章节在调用方已过滤）
+                    throw IllegalStateException("章节采样率不一致: ${f.name}")
+                }
+                var pos = first.first
+                while (true) {
+                    val frame = nextAdtsFrame(data, pos) ?: break
+                    val rawLen = frame.second - hdrLen
+                    if (rawLen > 0) {
+                        buf.clear()
+                        buf.put(data, frame.first + hdrLen, rawLen)
+                        buf.flip()
+                        info.set(0, rawLen, framesWritten * 1024L * 1_000_000L / sampleRate, 0)
+                        muxer.writeSampleData(trackIdx, buf, info)
+                        framesWritten++
+                    }
+                    pos = frame.first + frame.second
+                }
+                onProgress(done + 1, aacFiles.size)
+            }
+            muxer.stop()
+            muxer.release()
+            muxer = null
+            return true
+        } catch (e: Exception) {
+            Log.w(TAG, "M4A 导出失败: ${e.message}")
+            runCatching { muxer?.stop() }
+            runCatching { muxer?.release() }
+            outFile.delete()
+            return false
+        }
     }
 }

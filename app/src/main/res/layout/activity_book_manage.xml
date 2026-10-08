@@ -54,6 +54,12 @@
             android:text="重新生成缓存（从当前进度起）" />
 
         <Button
+            android:id="@+id/btn_export"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="导出音频（M4A，零转码）" />
+
+        <Button
             android:id="@+id/btn_clear_cache"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
             android:layout_width="match_parent"

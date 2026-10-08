@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import com.earbook.app.book.AssetRegistry
 import com.earbook.app.book.Book
 import com.earbook.app.databinding.ActivityBookManageBinding
@@ -14,6 +15,9 @@ import com.earbook.app.service.RenderService
 import com.earbook.app.service.ReadAloudService
 import com.earbook.app.store.PlaybackStore
 import com.earbook.app.tts.VoicePrefs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 书籍管理页（M3，R8c/R8d/R1/R6）：长按书卡进入。
@@ -111,6 +115,9 @@ class BookManageActivity : AppCompatActivity() {
                 .show()
         }
 
+        // R10：导出音频（M4A 零转码单文件 + 系统分享）——拍板方案见 docs/R10导出方案调研.md
+        binding.btnExport.setOnClickListener { startExportFlow() }
+
         // R8d：重新生成 = 从当前进度起排全书渲染队列（幂等，已缓存秒过）
         binding.btnRegenerate.setOnClickListener {
             val p = store.getProgress(book.id)
@@ -167,6 +174,121 @@ class BookManageActivity : AppCompatActivity() {
                 .setNegativeButton("取消", null)
                 .show()
         }
+    }
+
+    // ── R10 导出（M4A 零转码单文件 + 系统分享）─────────────────
+
+    private var exporting = false // 防重复点击
+
+    private fun startExportFlow() {
+        if (exporting) return
+        lifecycleScope.launch {
+            // 1) 导入拿章序（管理页无内存态；流式导入秒级）
+            val chapters = withContext(Dispatchers.IO) {
+                runCatching {
+                    com.earbook.app.book.BookImporter.import(
+                        this@BookManageActivity, android.net.Uri.parse(book.uriString)
+                    ).second
+                }.getOrNull()
+            }
+            if (chapters == null) {
+                Toast.makeText(this@BookManageActivity, "书籍读取失败，无法导出", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            // 2) 前置检查：逐章缓存状态（R10：未缓存=明确提示先缓存）
+            val voiceKey = VoicePrefs.cacheKeyFor(book.voice)
+            val cachedFiles = ArrayList<java.io.File>(chapters.size)
+            var uncached = 0
+            var wavCount = 0
+            for (i in chapters.indices) {
+                val key = ChapterAudioCache.Key(book.id, i, voiceKey)
+                val entry = cache.getEntry(key)
+                when {
+                    entry == null -> uncached++
+                    entry.format != "aac" -> wavCount++
+                    else -> cachedFiles.add(entry.file)
+                }
+            }
+            if (uncached > 0) {
+                AlertDialog.Builder(this@BookManageActivity)
+                    .setTitle("还有 $uncached 章未缓存")
+                    .setMessage("导出需要全书缓存完成。可以先在后台缓存剩余章节，完成后再来导出。")
+                    .setPositiveButton("先去缓存") { _, _ ->
+                        RenderService.start(
+                            this@BookManageActivity, book.id, store.getProgress(book.id).chapterIndex, readyAfter = 0
+                        )
+                        Toast.makeText(this@BookManageActivity, "已开始后台缓存（见通知栏进度）", Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+                return@launch
+            }
+            if (wavCount > 0) {
+                Toast.makeText(
+                    this@BookManageActivity,
+                    "有 $wavCount 章是降级 WAV 缓存（编码器曾失败），暂不支持导出；可删除缓存后重新生成再试",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            // 3) 体积预估确认
+            val totalBytes = cachedFiles.sumOf { it.length() }
+            AlertDialog.Builder(this@BookManageActivity)
+                .setTitle("导出《${book.title}》")
+                .setMessage(
+                    String.format(
+                        "将封装 %d 章为单个 M4A 文件（约 %.0f MB，零转码音质无损），随后拉起分享面板。",
+                        cachedFiles.size, totalBytes / 1024.0 / 1024
+                    )
+                )
+                .setPositiveButton("导出并分享") { _, _ -> doExport(cachedFiles) }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+    }
+
+    private fun doExport(cachedFiles: List<java.io.File>) {
+        exporting = true
+        val safeName = book.title.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(60)
+        val outFile = java.io.File(java.io.File(filesDir, "exports"), "$safeName.m4a")
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("正在导出")
+            .setMessage("0 / ${cachedFiles.size} 章")
+            .setCancelable(false)
+            .create()
+        dialog.show()
+        lifecycleScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                com.earbook.app.playback.AacCodec.exportToM4a(
+                    cachedFiles, outFile,
+                    onProgress = { done, total ->
+                        runOnUiThread { dialog.setMessage("$done / $total 章") }
+                    },
+                    isCancelled = { !lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) }
+                )
+            }
+            exporting = false
+            runCatching { dialog.dismiss() }
+            if (ok) {
+                shareFile(outFile)
+            } else {
+                Toast.makeText(this@BookManageActivity, "导出失败（缓存可能损坏），请重试或重新生成缓存", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun shareFile(file: java.io.File) {
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            this, "$packageName.fileprovider", file
+        )
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "audio/mp4"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, book.title)
+            putExtra(Intent.EXTRA_TEXT, "《${book.title}》有声书（EarBook 离线生成）")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(send, "分享《${book.title}》"))
     }
 
     private fun fmtBytes(bytes: Long): String = when {
