@@ -34,17 +34,18 @@ class SettingsActivity : AppCompatActivity() {
         fun refresh() {
             val male = prefs.getString("voice", "female") == "male"
             binding.tvVoiceHint.text =
-                if (male) "当前：男声（10 号）｜切换后下一句生效" else "当前：女声（7 号）｜切换后下一句生效"
+                if (male) "新书默认：男声（10 号）｜每本书可在书籍管理页单独切换"
+                else "新书默认：女声（7 号）｜每本书可在书籍管理页单独切换"
             binding.btnVoiceFemale.isEnabled = !male
             binding.btnVoiceMale.isEnabled = male
         }
         binding.btnVoiceFemale.setOnClickListener {
             prefs.edit().putString("voice", "female").apply(); refresh()
-            Toast.makeText(this, "已切女声", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "新书默认音色：女声", Toast.LENGTH_SHORT).show()
         }
         binding.btnVoiceMale.setOnClickListener {
             prefs.edit().putString("voice", "male").apply(); refresh()
-            Toast.makeText(this, "已切男声", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "新书默认音色：男声", Toast.LENGTH_SHORT).show()
         }
         refresh()
     }
@@ -64,6 +65,10 @@ class SettingsActivity : AppCompatActivity() {
             val modelMb = 147L // kokoro int8 常驻模型
             binding.tvCacheStatus.text =
                 "语音缓存：${fmt(audioMb)}（不设上限，按书管理） ｜ 模型：${fmt(modelMb)}（常驻）"
+        }
+
+        binding.btnStorage.setOnClickListener {
+            startActivity(android.content.Intent(this, StorageActivity::class.java))
         }
 
         binding.btnClearCache.setOnClickListener {

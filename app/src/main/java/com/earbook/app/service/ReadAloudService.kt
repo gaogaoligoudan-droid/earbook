@@ -66,10 +66,16 @@ class ReadAloudService : Service() {
         // M2 追上缓存二选一（R9）：通知 action / MainActivity dialog 都汇到这里
         const val ACTION_CHOICE_WAIT = "com.earbook.app.action.CHOICE_WAIT"
         const val ACTION_CHOICE_SYSTEM = "com.earbook.app.action.CHOICE_SYSTEM"
+        // M3 R11 存储预估确认
+        const val ACTION_ESTIMATE_ACCEPT = "com.earbook.app.action.ESTIMATE_ACCEPT"
+        const val ACTION_ESTIMATE_DECLINE = "com.earbook.app.action.ESTIMATE_DECLINE"
         const val EXTRA_BOOK_ID = "bookId"
 
         /** 追上弹窗待处理标记（MainActivity 前台时读走并弹 dialog） */
         @Volatile var pendingCacheChoice = false
+
+        /** R11 存储预估待确认（估算字节 to 可用字节；MainActivity 前台读走弹 dialog） */
+        @Volatile var pendingStorageEstimate: Pair<Long, Long>? = null
 
         /** R9 起播门槛：先缓存前 N 章再起播 */
         private const val STARTUP_GATE_CHAPTERS = 3
@@ -244,6 +250,18 @@ class ReadAloudService : Service() {
                 cancelChoicePrompt()
                 if (!isSpeaking) resumeOrPlay()
             }
+            // M3 R11 存储预估确认
+            ACTION_ESTIMATE_ACCEPT -> {
+                pendingStorageEstimate = null
+                val b = book ?: return START_NOT_STICKY
+                startGateRender(b)
+            }
+            ACTION_ESTIMATE_DECLINE -> {
+                pendingStorageEstimate = null
+                startupGate = false
+                Toast.makeText(this, "已取消缓存", Toast.LENGTH_SHORT).show()
+                stopSelf()
+            }
         }
         return START_NOT_STICKY
     }
@@ -287,8 +305,18 @@ class ReadAloudService : Service() {
                 startupGate = false
                 waitingForChapter = -1
                 fallbackToSystem = false
-                // 磁盘缓存命中路径：注入书上下文（音色缓存键随动）
-                (engine as? com.earbook.app.engine.SherpaReadAloudEngine)?.setBookContext(target.id)
+                // M3 R6 书级模式：切换引擎到该书模式（静默，无 Toast）
+                if (target.mode == com.earbook.app.book.Book.MODE_SYSTEM && sherpaEngine != null) {
+                    switchToSystem(notify = false)
+                } else if (target.mode == com.earbook.app.book.Book.MODE_NEURAL && sherpaEngine == null &&
+                    com.earbook.app.tts.ModelManager.isReady(this@ReadAloudService)
+                ) {
+                    switchToSherpa(notify = false)
+                }
+                // 磁盘缓存命中路径：注入书上下文（M3 R1 书级音色随动）
+                (engine as? com.earbook.app.engine.SherpaReadAloudEngine)?.setBookContext(
+                    target.id, com.earbook.app.tts.VoicePrefs.cacheKeyFor(target.voice)
+                )
                 val imported = withContext(Dispatchers.IO) {
                     BookImporter.import(
                         this@ReadAloudService,
@@ -301,22 +329,32 @@ class ReadAloudService : Service() {
                 chapterIndex = saved.chapterIndex.coerceIn(0, (chapters.size - 1).coerceAtLeast(0))
                 sentenceIndex = saved.sentenceIndex.coerceIn(0, (chapters[chapterIndex].sentenceCount - 1).coerceAtLeast(0))
                 consecutiveFailures = 0
-                updateMetadata()
-                // M2 调度（R9 起播门槛 + R8b 授权映射）：
-                // 神经模式且当前章未缓存 → 先渲 min(3, 全书) 章再起播（进度见渲染通知）
-                if (sherpaEngine != null && !isChapterCached(chapterIndex)) {
-                    startupGate = true
-                    val n = minOf(STARTUP_GATE_CHAPTERS, chapters.size)
-                    RenderService.start(this@ReadAloudService, target.id, chapterIndex, readyAfter = n)
-                    Toast.makeText(
-                        this@ReadAloudService,
-                        "首次播放：先缓存 $n 章后自动开始（进度见通知栏）",
-                        Toast.LENGTH_LONG
-                    ).show()
-                } else {
-                    startBackgroundQueue(chapterIndex + 1)
-                    playCurrent()
+                // M3：预估元数据统计写回（旧书首次播放补齐；徽标/预估的分母）
+                if (target.totalChapters == 0) {
+                    val chars = chapters.sumOf { c -> c.sentences.sumOf { it.length.toLong() } }
+                    store.updateBook(
+                        target.copy(totalChars = chars, totalChapters = chapters.size)
+                    )
+                    book = book?.copy(totalChars = chars, totalChapters = chapters.size)
                 }
+                updateMetadata()
+                if (target.mode == com.earbook.app.book.Book.MODE_SYSTEM) {
+                    // R6 系统模式：点开即出声，无缓存/门槛/预估
+                    playCurrent()
+                    return@launch
+                }
+                // M3 R11 缓存前预估：全书估算 vs 可用空间，超出则请用户决定
+                val estimate = com.earbook.app.book.StorageEstimator.estimateBookBytes(target.totalChars)
+                val stat = android.os.StatFs(filesDir.absolutePath)
+                val available = stat.availableBytes
+                if (target.totalChars > 0 && estimate > available) {
+                    pendingStorageEstimate = estimate to available
+                    Toast.makeText(
+                        this@ReadAloudService, "存储空间需要确认，请查看提示", Toast.LENGTH_LONG
+                    ).show()
+                    return@launch
+                }
+                startGateRender(target)
             } catch (e: Exception) {
                 Log.e(TAG, "导入失败: ${e.message}", e)
                 // 用户必须感知失败原因（扫描版 PDF、文件损坏等），不能静默
@@ -341,7 +379,7 @@ class ReadAloudService : Service() {
             return
         }
         // ── M2 章级路径（R6：缓存命中整章一条轨）与追上检测（R9）──
-        if (sherpaEngine != null) {
+        if (useNeural()) {
             if (isChapterCached(chapterIndex)) {
                 if (fallbackToSystem) switchToSherpa(notify = true) // 缓存跟上，边界自然回切
                 if (tryPlayChapterMonolithic()) return
@@ -370,11 +408,36 @@ class ReadAloudService : Service() {
         return next.sentences.firstOrNull()?.let { Triple(cIdx + 1, 0, it) }
     }
 
-    // ── M2 调度层：章级播放 / 追上检测（R9）/ 授权映射（R8b）/ 引擎切换 ──
+    // ── M2/M3 调度层：章级播放 / 追上检测（R9）/ 授权映射（R8b）/ 书级音色模式（R1/R6）──
+
+    private fun bookVoiceKey(): String =
+        book?.let { com.earbook.app.tts.VoicePrefs.cacheKeyFor(it.voice) }
+            ?: com.earbook.app.tts.VoicePrefs.cacheKey(this)
+
+    /** R6 书级模式：本书是否走神经路径（章级缓存/门槛/追上流程） */
+    private fun useNeural(): Boolean =
+        sherpaEngine != null && book?.mode != com.earbook.app.book.Book.MODE_SYSTEM
+
+    /** R9 起播门槛：当前章未缓存 → 先渲 min(3, 全书) 章再自动起播（进度见渲染通知） */
+    private fun startGateRender(target: com.earbook.app.book.Book) {
+        if (isChapterCached(chapterIndex)) {
+            startBackgroundQueue(chapterIndex + 1)
+            playCurrent()
+            return
+        }
+        startupGate = true
+        val n = minOf(STARTUP_GATE_CHAPTERS, chapters.size)
+        RenderService.start(this, target.id, chapterIndex, readyAfter = n)
+        Toast.makeText(
+            this,
+            "首次播放：先缓存 $n 章后自动开始（进度见通知栏）",
+            Toast.LENGTH_LONG
+        ).show()
+    }
 
     private fun isChapterCached(idx: Int): Boolean {
         val bid = book?.id ?: return false
-        return cache.has(com.earbook.app.playback.ChapterAudioCache.Key(bid, idx, com.earbook.app.tts.VoicePrefs.cacheKey(this)))
+        return cache.has(com.earbook.app.playback.ChapterAudioCache.Key(bid, idx, bookVoiceKey()))
     }
 
     /** R8b 后台推进队列的授权映射：电池=前台服务随时渲；仅插电/未问=WorkManager（charging） */
@@ -391,9 +454,7 @@ class ReadAloudService : Service() {
     /** 章级单轨播放（R6）：当前章已缓存时整章一条 AudioTrack 播到底。返回 false=启动失败走逐句 */
     private fun tryPlayChapterMonolithic(): Boolean {
         val bid = book?.id ?: return false
-        val key = com.earbook.app.playback.ChapterAudioCache.Key(
-            bid, chapterIndex, com.earbook.app.tts.VoicePrefs.cacheKey(this)
-        )
+        val key = com.earbook.app.playback.ChapterAudioCache.Key(bid, chapterIndex, bookVoiceKey())
         requestFocus() || return false
         chapterPlayer.play(key, sentenceIndex, object : com.earbook.app.playback.ChapterPlayer.Callbacks {
             override fun onSentenceEnter(sentence: Int) {
@@ -497,8 +558,8 @@ class ReadAloudService : Service() {
         runCatching { nm.cancel(PROMPT_NOTIFICATION_ID) }
     }
 
-    /** 切系统语音（追上时「继续听」的选择）：释放神经引擎省内存，回切冷加载（章边界可接受） */
-    private fun switchToSystem() {
+    /** 切系统语音（追上时「继续听」/ 书级系统模式）：释放神经引擎省内存，回切冷加载（章边界可接受） */
+    private fun switchToSystem(notify: Boolean = true) {
         if (fallbackToSystem) return
         fallbackToSystem = true
         runCatching { engine.stop() }
@@ -515,12 +576,12 @@ class ReadAloudService : Service() {
                 }
             }
         }
-        Toast.makeText(this, "已切系统语音，缓存跟上后自动切回", Toast.LENGTH_LONG).show()
+        if (notify) Toast.makeText(this, "已切系统语音，缓存跟上后自动切回", Toast.LENGTH_LONG).show()
     }
 
     /** 缓存跟上后回切神经语音（边界自然切换；模型异步加载，章级单轨播放不依赖它就绪） */
-    private fun switchToSherpa(notify: Boolean) {
-        if (!fallbackToSystem) return
+    private fun switchToSherpa(notify: Boolean = true) {
+        if (!fallbackToSystem && sherpaEngine != null) return
         fallbackToSystem = false
         runCatching { engine.stop() }
         engine = (com.earbook.app.engine.SherpaReadAloudEngine(this).also { se ->
@@ -535,7 +596,7 @@ class ReadAloudService : Service() {
                     }
                 }
             }
-            book?.id?.let { se.setBookContext(it) }
+            book?.id?.let { se.setBookContext(it, bookVoiceKey()) }
         })
         if (notify) Toast.makeText(this, "缓存已跟上，切回神经语音", Toast.LENGTH_SHORT).show()
     }

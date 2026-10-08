@@ -1,6 +1,7 @@
 package com.earbook.app.tts
 
 import android.content.Context
+import com.earbook.app.book.Book
 
 /**
  * 音色偏好（2026-10-07 真机试听拍板：7 号女声 zf sid=30 / 10 号男声 zm sid=70）。
@@ -21,4 +22,12 @@ object VoicePrefs {
 
     /** 磁盘缓存键：与 sid 一一对应（kokoro30/kokoro70） */
     fun cacheKey(context: Context): String = "kokoro${sid(context)}"
+
+    /** 书级音色 → 缓存键映射（M3，R1 书级音色） */
+    fun cacheKeyFor(voice: String): String =
+        if (voice == Book.VOICE_MALE) "kokoro70" else "kokoro30"
+
+    /** 新书默认音色（R1：设置页全局音色语义退化为新书默认值） */
+    fun defaultVoice(context: Context): String =
+        if (isMale(context)) Book.VOICE_MALE else Book.VOICE_FEMALE
 }

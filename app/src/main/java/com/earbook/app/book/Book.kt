@@ -5,11 +5,19 @@ data class Book(
     val id: String,       // 稳定 ID：uri 的 hash
     val title: String,
     val uriString: String,
-    val format: String = FORMAT_TXT   // "txt" / "pdf"
+    val format: String = FORMAT_TXT,   // "txt" / "pdf"
+    val voice: String = VOICE_FEMALE,  // R1 书级音色：改音色=该书缓存重渲（优化保留）
+    val mode: String = MODE_NEURAL,    // R6 书级播放模式：neural=缓存后播 / system=即时
+    val totalChars: Long = 0,          // R11 预估数据源（播放时统计写回，0=未知）
+    val totalChapters: Int = 0         // R8c 徽标分母（同上）
 ) {
     companion object {
         const val FORMAT_TXT = "txt"
         const val FORMAT_PDF = "pdf"
+        const val VOICE_FEMALE = "female"
+        const val VOICE_MALE = "male"
+        const val MODE_NEURAL = "neural"
+        const val MODE_SYSTEM = "system"
     }
 }
 

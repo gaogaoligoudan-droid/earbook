@@ -3,6 +3,7 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- M2 在线引擎预留，M1 不联网 -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -37,10 +38,36 @@
             android:exported="false"
             android:label="设置" />
 
+        <activity
+            android:name=".WizardActivity"
+            android:exported="false"
+            android:label="欢迎使用 EarBook" />
+
+        <activity
+            android:name=".BookManageActivity"
+            android:exported="false"
+            android:label="书籍管理" />
+
+        <activity
+            android:name=".StorageActivity"
+            android:exported="false"
+            android:label="存储管理" />
+
         <service
             android:name=".service.ReadAloudService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+
+        <!-- M2 前台渲染服务：离线音频渲染属特殊用途（specialUse 无 dataSync 的 6h/天配额，
+             长书全书渲染需要）；subtype 说明用于 Android 14+ 校验 -->
+        <service
+            android:name=".service.RenderService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="offline_tts_chapter_rendering" />
+        </service>
     </application>
 
 </manifest>

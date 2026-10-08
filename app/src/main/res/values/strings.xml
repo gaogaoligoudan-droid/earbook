@@ -6,4 +6,5 @@
     <string name="voice_model_downloading">正在初始化离线语音… %1$d%%</string>
     <string name="voice_model_ready">离线语音已就绪，播放不再依赖网络</string>
     <string name="voice_model_failed">初始化失败，请退出应用后重试</string>
+    <string name="storage_row_detail">%1$s · 已缓存 %2$d 章 · AI 优化 %3$d 章</string>
 </resources>

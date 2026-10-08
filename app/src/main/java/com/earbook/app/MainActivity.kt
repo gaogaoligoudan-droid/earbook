@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.earbook.app.book.Book
 import com.earbook.app.book.BookImporter
 import com.earbook.app.databinding.ActivityMainBinding
 import com.earbook.app.service.ReadAloudService
@@ -58,6 +59,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         refreshList()
+
+        // M3 R6：首次启动单一向导（欢迎/模式/音色/授权+存储）
+        if (!getSharedPreferences("earbook", MODE_PRIVATE)
+                .getBoolean("wizard_done", false)
+        ) {
+            WizardActivity.start(this)
+        }
     }
 
     override fun onResume() {
@@ -68,6 +76,32 @@ class MainActivity : AppCompatActivity() {
             if (com.earbook.app.tts.ModelManager.isReady(this)) View.GONE else View.VISIBLE
         // M2：追上二选一——服务发了提示而用户此刻回到前台，改用 dialog 承接
         maybeShowCacheChoiceDialog()
+        // M3 R11：存储预估确认（Service 在起播门槛前挂起等待）
+        maybeShowStorageEstimateDialog()
+    }
+
+    private fun maybeShowStorageEstimateDialog() {
+        val est = ReadAloudService.pendingStorageEstimate ?: return
+        ReadAloudService.pendingStorageEstimate = null
+        val mb = est.first / (1024.0 * 1024)
+        val availMb = est.second / (1024.0 * 1024)
+        AlertDialog.Builder(this)
+            .setTitle("存储空间确认")
+            .setMessage(
+                String.format(
+                    "离线缓存预计需要约 %.0f MB，设备当前可用 %.0f MB。\n\n" +
+                        "继续将开始缓存音频（可随时在存储管理页清理）。",
+                    mb, availMb
+                )
+            )
+            .setPositiveButton("继续缓存") { _, _ ->
+                ReadAloudService.send(this, ReadAloudService.ACTION_ESTIMATE_ACCEPT)
+            }
+            .setNegativeButton("先不了") { _, _ ->
+                ReadAloudService.send(this, ReadAloudService.ACTION_ESTIMATE_DECLINE)
+            }
+            .setCancelable(false)
+            .show()
     }
 
     private var voiceModelDialog: AlertDialog? = null
@@ -119,9 +153,15 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 // 书架导入只取元数据；全书解析推迟到播放时（含错误 Toast 反馈）
-                val book = withContext(Dispatchers.IO) {
+                val meta = withContext(Dispatchers.IO) {
                     BookImporter.buildBookMeta(this@MainActivity, uri)
                 }
+                // M3 R1/R6：新书落向导默认值（书级音色/模式）
+                val prefs = getSharedPreferences("earbook", MODE_PRIVATE)
+                val book = meta.copy(
+                    voice = prefs.getString("default_voice", Book.VOICE_FEMALE) ?: Book.VOICE_FEMALE,
+                    mode = prefs.getString("default_mode", Book.MODE_NEURAL) ?: Book.MODE_NEURAL
+                )
                 if (store.addBook(book)) {
                     Toast.makeText(this@MainActivity, "已导入：${book.title}", Toast.LENGTH_SHORT).show()
                 } else {
@@ -136,14 +176,26 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshList() {
         val books = store.listBooks()
+        val registry = com.earbook.app.book.AssetRegistry(this)
         adapter = BookAdapter(
             books = books,
             progressText = { book ->
                 val p = store.getProgress(book.id)
                 "进度：第 ${p.chapterIndex + 1} 章 · 第 ${p.sentenceIndex + 1} 句"
             },
+            badgeText = { book ->
+                // R8c：⚡已缓存 N/M · ✨优化 N（M=章数未知时只显示 N）；⚠优化失败 K
+                val s = registry.bookSummary(book.id)
+                if (s.cachedChapters == 0 && s.optimizedChapters == 0 && s.failedChapters == 0) null
+                else buildString {
+                    append("⚡ 已缓存 ${s.cachedChapters}")
+                    if (book.totalChapters > 0) append("/${book.totalChapters}")
+                    if (s.optimizedChapters > 0) append(" · ✨ AI 优化 ${s.optimizedChapters}")
+                    if (s.failedChapters > 0) append(" · ⚠ ${s.failedChapters} 章优化失败")
+                }
+            },
             onClick = { book -> startPlayback(book.id) },
-            onLongClick = { book -> confirmRemove(book) }
+            onLongClick = { book -> BookManageActivity.start(this@MainActivity, book.id) }
         )
         binding.recyclerBooks.layoutManager = LinearLayoutManager(this)
         binding.recyclerBooks.adapter = adapter
@@ -151,8 +203,36 @@ class MainActivity : AppCompatActivity() {
         else android.view.View.GONE
     }
 
-    /** R8b：首触后台缓存先问授权（记住选择），随后交给服务 */
+    /** R8b：首触后台缓存先问授权（记住选择），随后交给服务；R11 预估前置检查 */
     private fun startPlayback(bookId: String) {
+        val rp = com.earbook.app.playback.RenderPrefs
+        // M3 R11：缓存前预估（点书时书元数据在手，直接问，避免 Service 侧挂起等待）
+        val b = store.listBooks().firstOrNull { it.id == bookId }
+        if (b != null && b.mode == Book.MODE_NEURAL && b.totalChars > 0) {
+            val estimate = com.earbook.app.book.StorageEstimator.estimateBookBytes(b.totalChars)
+            val available = android.os.StatFs(filesDir.absolutePath).availableBytes
+            if (estimate > available) {
+                AlertDialog.Builder(this)
+                    .setTitle("存储空间确认")
+                    .setMessage(
+                        String.format(
+                            "《%s》离线缓存预计约 %.0f MB，设备可用 %.0f MB。\n\n继续将开始缓存（可随时在存储管理页清理）。",
+                            b.title, estimate / 1024.0 / 1024, available / 1024.0 / 1024
+                        )
+                    )
+                    .setPositiveButton("继续缓存") { _, _ ->
+                        launchAfterChecks(bookId)
+                    }
+                    .setNegativeButton("先不了", null)
+                    .setCancelable(false)
+                    .show()
+                return
+            }
+        }
+        launchAfterChecks(bookId)
+    }
+
+    private fun launchAfterChecks(bookId: String) {
         val rp = com.earbook.app.playback.RenderPrefs
         if (rp.auth(this) == rp.ASK) {
             AlertDialog.Builder(this)
@@ -195,22 +275,6 @@ class MainActivity : AppCompatActivity() {
                 ReadAloudService.send(this, ReadAloudService.ACTION_CHOICE_SYSTEM)
             }
             .setCancelable(false)
-            .show()
-    }
-
-    private fun confirmRemove(book: com.earbook.app.book.Book) {
-        AlertDialog.Builder(this)
-            .setTitle("移除《${book.title}》？")
-            .setMessage("将从书架移除并删除进度记录（不会删除源文件）")
-            .setPositiveButton("移除") { _, _ ->
-                // 只有删的书正在播时才停服务，删除其他书不误杀当前播放
-                if (ReadAloudService.currentBookId == book.id) {
-                    ReadAloudService.send(this, ReadAloudService.ACTION_STOP)
-                }
-                store.removeBook(book.id)
-                refreshList()
-            }
-            .setNegativeButton("取消", null)
             .show()
     }
 

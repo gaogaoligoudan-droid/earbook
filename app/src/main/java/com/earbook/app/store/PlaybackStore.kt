@@ -27,11 +27,22 @@ class PlaybackStore(context: Context) {
                     id = o.getString("id"),
                     title = o.getString("title"),
                     uriString = o.getString("uri"),
-                    format = o.optString("format", Book.FORMAT_TXT)
+                    format = o.optString("format", Book.FORMAT_TXT),
+                    // M3 书级音色/模式 + 预估元数据（旧数据默认值兼容）
+                    voice = o.optString("voice", Book.VOICE_FEMALE),
+                    mode = o.optString("mode", Book.MODE_NEURAL),
+                    totalChars = o.optLong("totalChars", 0),
+                    totalChapters = o.optInt("totalChapters", 0)
                 )
             )
         }
         return books
+    }
+
+    /** 按书更新可变元数据（音色/模式/预估统计），保持列表顺序 */
+    fun updateBook(updated: Book) {
+        val books = listBooks().map { if (it.id == updated.id) updated else it }
+        prefs.edit().putString(KEY_BOOKS, toJson(books)).apply()
     }
 
     fun addBook(book: Book): Boolean {
@@ -75,6 +86,10 @@ class PlaybackStore(context: Context) {
                     .put("title", b.title)
                     .put("uri", b.uriString)
                     .put("format", b.format)
+                    .put("voice", b.voice)
+                    .put("mode", b.mode)
+                    .put("totalChars", b.totalChars)
+                    .put("totalChapters", b.totalChapters)
             )
         }
         return array.toString()

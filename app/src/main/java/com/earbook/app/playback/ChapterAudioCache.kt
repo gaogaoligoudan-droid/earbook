@@ -114,6 +114,21 @@ class ChapterAudioCache(private val context: Context) {
         }
     }
 
+    /** 清一本书全部缓存（跨音色/版本）——删书（R11「尺寸归零」）与「删除 AI 优化」（R7 缓存全作废）用 */
+    fun clearBook(bookId: String) {
+        root().listFiles()?.forEach { f ->
+            if (f.name.startsWith("$bookId")) f.delete()
+        }
+    }
+
+    /** 清一本书指定音色的缓存——R1 换音色=旧缓存重渲（AI 优化与音色无关，不动 assets-index） */
+    fun clearBookVoice(bookId: String, voice: String) {
+        root().listFiles()?.forEach { f ->
+            // 文件名：bookId_chapter_voice_textVersion.aac|wav
+            if (f.name.startsWith("$bookId") && f.name.contains("_${voice}_")) f.delete()
+        }
+    }
+
     /** 某书全部缓存章节文件（R11 管理页/R8d 单书删除） */
     fun filesForBook(bookId: String): List<File> =
         root().listFiles { f -> f.isFile && f.name.startsWith("$bookId") }?.toList() ?: emptyList()

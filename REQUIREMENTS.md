@@ -144,10 +144,17 @@
 
 ## 五、当前代码状态（开发注意）
 
-- 主分支最新 commit：`073813f`（CI 双绿）
-- **本地未提交**：音色接线（VoicePrefs/设置 UI/双声常量）+ 播放链路修复 +
-  VoiceSamplerTest —— 属 R1 范围，验收通过后提交
-- 真机：0.2.0 已装 + 模型已解包 + voice-samples/ 试听资产
+- M1 数据层（76b02c4）+ AAC 真机三轮根因修复（ab30007）+ **M2 调度层（84765f8）**：
+  章级单轨播放器 / RenderService 前台渲染 / R8b 授权映射 / R9 起播门槛 / R9 追上
+  二选一 / 引擎切换；真机仪器测试 7/7 绿（AacRoundTrip/ChapterPlayer/Smoke/SherpaE2e/
+  VoiceSampler）；CI 绿
+- **M3 UX 层（本提交）**：首次单一向导（欢迎/默认模式/音色试听/授权+存储说明）/
+  书籍管理页（长按书卡：徽标明细+音色/模式切换+缓存与优化删除+重新生成+移除）/
+  存储管理页（每书占用+总占用+低空间提醒+逐书清理）+ 书架徽标（R8c）+ 缓存前
+  预估弹窗（R11）；Book 加书级 voice/mode/totalChars/totalChapters 字段
+- 已知欠账：RenderService manifest 注册（M2 遗漏，M3 提交补上，specialUse 类型）；
+  M2/M3 真机 UX 全流程走查待用户验证（门槛渲染慢机一章 ~25 分钟）
+- 真机：0.2.0 基座 + M1/M2/M3 代码已装（Mi Note 3）
 
 ## 六、开发纪律（用户 2026-10-07 立）
 

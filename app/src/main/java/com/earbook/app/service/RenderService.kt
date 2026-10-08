@@ -14,7 +14,6 @@ import androidx.core.content.ContextCompat
 import com.earbook.app.MainActivity
 import com.earbook.app.R
 import com.earbook.app.playback.PrerenderManager
-import com.earbook.app.tts.VoicePrefs
 
 /**
  * 前台渲染服务（M2，R8a 通知栏进度 + R6「当前章优先→后续章队列」）：
@@ -124,7 +123,11 @@ class RenderService : Service() {
     }
 
     private fun renderQueue(bookId: String, from: Int, readyAfter: Int) {
-        val voice = VoicePrefs.cacheKey(this)
+        // M3 R1 书级音色：渲染音色随书（换音色重渲语义由管理页清缓存+此处的读取配合实现）
+        val voice = com.earbook.app.store.PlaybackStore(this)
+            .listBooks().firstOrNull { it.id == bookId }
+            ?.let { com.earbook.app.tts.VoicePrefs.cacheKeyFor(it.voice) }
+            ?: com.earbook.app.tts.VoicePrefs.cacheKey(this)
         // 全书章数：导入一次拿边界（队列终止条件）。
         // renderChapter 内部仍按 M1 既有行为逐章重导入（幂等闸门已验证，M2 不动它）
         val total = runCatching {

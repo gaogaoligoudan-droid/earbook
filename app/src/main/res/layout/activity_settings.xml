@@ -33,6 +33,14 @@
             android:textColor="?android:attr/textColorSecondary" />
 
         <Button
+            android:id="@+id/btn_storage"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:text="存储管理（每书占用与清理）" />
+
+        <Button
             android:id="@+id/btn_clear_cache"
             style="@style/Widget.MaterialComponents.Button.TextButton"
             android:layout_width="wrap_content"

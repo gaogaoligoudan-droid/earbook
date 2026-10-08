@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:id="@+id/tv_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tv_meta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tv_assets"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="?attr/colorSurfaceVariant"
+            android:padding="14dp"
+            android:lineSpacingExtra="4dp"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/btn_voice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="切换音色" />
+
+        <Button
+            android:id="@+id/btn_mode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="切换播放模式" />
+
+        <Button
+            android:id="@+id/btn_regenerate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="重新生成缓存（从当前进度起）" />
+
+        <Button
+            android:id="@+id/btn_clear_cache"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="删除神经缓存（当前音色）" />
+
+        <Button
+            android:id="@+id/btn_clear_optimize"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="删除 AI 优化（缓存随之作废）" />
+
+        <Button
+            android:id="@+id/btn_remove_book"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="从书架移除本书"
+            android:textColor="?attr/colorError" />
+    </LinearLayout>
+</ScrollView>
